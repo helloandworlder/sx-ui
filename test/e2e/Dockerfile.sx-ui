@@ -1,0 +1,34 @@
+# Build sx-ui + sx-core from monorepo root context
+# docker build -f sx-ui/test/e2e/Dockerfile.sx-ui -t sx-ui-test .
+FROM golang:1.26.1-alpine AS builder
+WORKDIR /workspace
+
+RUN apk --no-cache add build-base gcc curl unzip
+
+COPY sx-core/ ./sx-core/
+COPY sx-ui/ ./sx-ui/
+
+# Build sx-ui panel
+WORKDIR /workspace/sx-ui
+ENV CGO_ENABLED=1
+ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
+RUN go build -ldflags "-w -s" -o /out/x-ui main.go
+
+# Build sx-core xray binary
+WORKDIR /workspace/sx-core
+RUN ARCH=$(go env GOARCH) && \
+    go build -ldflags "-w -s" -o /out/bin/xray-linux-${ARCH} ./main
+
+# ── Runtime ─────────────────────────────────────────────────
+FROM alpine:3.20
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates tzdata bash curl
+
+COPY --from=builder /out/ /app/
+RUN chmod +x /app/x-ui /app/bin/*
+RUN mkdir -p /etc/x-ui /var/log/x-ui
+
+EXPOSE 2053 20080 20081 20082 20083 20084
+ENV XUI_MAIN_FOLDER=/app
+CMD ["/app/x-ui"]

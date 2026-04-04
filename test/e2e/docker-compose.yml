@@ -1,0 +1,33 @@
+# sx-ui E2E — docker compose -f sx-ui/test/e2e/docker-compose.yml up --build --abort-on-container-exit
+services:
+  sx-ui:
+    build:
+      context: ../../..
+      dockerfile: sx-ui/test/e2e/Dockerfile.sx-ui
+    container_name: sx-ui-e2e
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:2053/"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [e2e]
+
+  test-runner:
+    build:
+      context: ../../..
+      dockerfile: sx-ui/test/e2e/Dockerfile.sx-ui
+    container_name: sx-ui-e2e-runner
+    depends_on:
+      sx-ui:
+        condition: service_healthy
+    entrypoint: ["bash", "/tests/run_tests.sh"]
+    volumes:
+      - ./run_tests.sh:/tests/run_tests.sh:ro
+    environment:
+      PANEL_URL: http://sx-ui:2053
+      XRAY_BIN: /app/bin/xray-linux-amd64
+      SOCKS5_OUT: "207.21.125.221:9878:uIVTyaTFkeA:vr0Pq08jEHBQ"
+    networks: [e2e]
+
+networks:
+  e2e:
