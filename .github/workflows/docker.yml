@@ -19,13 +19,34 @@ jobs:
         with:
           submodules: true
 
+      - name: Prepare image targets
+        id: prep
+        env:
+          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKER_HUB_USERNAME" ] && [ -n "$DOCKER_HUB_TOKEN" ]; then
+            {
+              echo 'images<<EOF'
+              echo 'helloandworlder/sx-ui'
+              echo 'ghcr.io/helloandworlder/sx-ui'
+              echo 'EOF'
+              echo 'push_dockerhub=true'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'images<<EOF'
+              echo 'ghcr.io/helloandworlder/sx-ui'
+              echo 'EOF'
+              echo 'push_dockerhub=false'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: |
-            helloandworlder/sx-ui
-            ghcr.io/helloandworlder/sx-ui
+          images: ${{ steps.prep.outputs.images }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -40,6 +61,7 @@ jobs:
           install: true
 
       - name: Login to Docker Hub
+        if: steps.prep.outputs.push_dockerhub == 'true'
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}

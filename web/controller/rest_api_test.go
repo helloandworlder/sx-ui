@@ -294,8 +294,8 @@ func TestAPI_SyncState(t *testing.T) {
 	}
 	resp := parseResp(t, w)
 	var state struct {
-		ConfigSeq  int64                  `json:"configSeq"`
-		Outbounds  []model.Outbound       `json:"outbounds"`
+		ConfigSeq  int64                   `json:"configSeq"`
+		Outbounds  []model.Outbound        `json:"outbounds"`
 		Routes     []model.RoutingRule     `json:"routes"`
 		RateLimits []model.ClientRateLimit `json:"rateLimits"`
 		NodeMeta   map[string]string       `json:"nodeMeta"`
