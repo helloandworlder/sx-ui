@@ -41,7 +41,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted=$(find . -path './third_party/xray-core' -prune -o -name '*.go' -print | xargs gofmt -l)
           if [ -n "$unformatted" ]; then
             echo "These files are not gofmt-formatted:"
             echo "$unformatted"
