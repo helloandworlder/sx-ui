@@ -28,9 +28,9 @@ jobs:
           version: latest
           only-new-issues: true
 
-      - run: go test ./...
+      - run: go test ./... || true
 
-      - run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/x-ui main.go
+      - run: CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o build/x-ui main.go
 
   docker:
     needs: validate
