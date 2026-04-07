@@ -2,12 +2,6 @@ version: "2"
 
 run:
   timeout: 5m
-  modules-download-mode: readonly
-
-issues:
-  exclude-dirs:
-    - third_party
-    - vendor
 
 linters:
   enable:
@@ -17,9 +11,12 @@ linters:
     - unused
     - ineffassign
     - gosimple
-
-linters-settings:
-  govet:
-    enable-all: false
-  staticcheck:
-    checks: ["all", "-SA1019"]
+  settings:
+    govet:
+      enable-all: false
+    staticcheck:
+      checks: ["all", "-SA1019"]
+  exclusions:
+    paths:
+      - third_party
+      - vendor
