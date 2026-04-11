@@ -6,6 +6,7 @@ import (
 
 	"github.com/helloandworlder/sx-ui/v2/database"
 	"github.com/helloandworlder/sx-ui/v2/database/model"
+	"github.com/helloandworlder/sx-ui/v2/xray"
 )
 
 type outboundModel = model.Outbound
@@ -93,6 +94,141 @@ func TestConfigSeq_BumpSeqAndHash(t *testing.T) {
 	}
 	if info.Hash == "" {
 		t.Error("expected non-empty hash")
+	}
+}
+
+func TestConfigSeq_HashIgnoresDynamicTrafficCounters(t *testing.T) {
+	dbPath := setupTestDB(t)
+	defer teardownTestDB(dbPath)
+
+	db := database.GetDB()
+	if err := db.Create(&model.Inbound{
+		Remark:         "Socks",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20084,
+		Protocol:       model.Socks,
+		Settings:       `{"accounts":[{"user":"u","pass":"p","email":"e@example.com"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-socks",
+		Sniffing:       `{"enabled":false}`,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ConfigSeqService{}
+	if _, err := svc.BumpSeqAndHash(); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := svc.GetSeqInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Model(&model.Inbound{}).
+		Where("tag = ?", "in-socks").
+		Updates(map[string]any{"up": int64(1024), "down": int64(2048), "all_time": int64(3072)}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.UpdateHash(); err != nil {
+		t.Fatal(err)
+	}
+	afterTraffic, err := svc.GetSeqInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if initial.Hash != afterTraffic.Hash {
+		t.Fatalf("expected config hash to ignore traffic counters, got %s -> %s", initial.Hash, afterTraffic.Hash)
+	}
+}
+
+func TestConfigSeq_HashIgnoresRateLimitUpdatedAt(t *testing.T) {
+	dbPath := setupTestDB(t)
+	defer teardownTestDB(dbPath)
+
+	db := database.GetDB()
+	if err := db.Create(&model.ClientRateLimit{
+		Email:      "line@example.com",
+		EgressBps:  125000,
+		IngressBps: 125000,
+		UpdatedAt:  1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ConfigSeqService{}
+	if _, err := svc.BumpSeqAndHash(); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := svc.GetSeqInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Model(&model.ClientRateLimit{}).
+		Where("email = ?", "line@example.com").
+		Update("updated_at", int64(2)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.UpdateHash(); err != nil {
+		t.Fatal(err)
+	}
+	afterUpdate, err := svc.GetSeqInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if initial.Hash != afterUpdate.Hash {
+		t.Fatalf("expected config hash to ignore rate limit timestamps, got %s -> %s", initial.Hash, afterUpdate.Hash)
+	}
+}
+
+func TestInboundService_GetClientByEmailSupportsAccountProtocols(t *testing.T) {
+	dbPath := setupTestDB(t)
+	defer teardownTestDB(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Socks",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20084,
+		Protocol:       model.Socks,
+		Settings:       `{"accounts":[{"user":"u","pass":"p","email":"line@example.com","enable":true,"comment":"test","egressBps":125000,"ingressBps":125000}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-socks",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&xray.ClientTraffic{
+		InboundId: inbound.Id,
+		Email:     "line@example.com",
+		Enable:    true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := InboundService{}
+	traffic, client, err := svc.GetClientByEmail("line@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traffic == nil || client == nil {
+		t.Fatal("expected traffic and client to be resolved")
+	}
+	if client.Email != "line@example.com" {
+		t.Fatalf("unexpected client email: %s", client.Email)
+	}
+	if client.Password != "p" {
+		t.Fatalf("unexpected client password: %s", client.Password)
+	}
+	if client.EgressBps != 125000 || client.IngressBps != 125000 {
+		t.Fatalf("unexpected account rate limits: %d/%d", client.EgressBps, client.IngressBps)
 	}
 }
 

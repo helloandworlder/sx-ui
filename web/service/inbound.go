@@ -26,6 +26,123 @@ type InboundService struct {
 	xrayApi xray.XrayAPI
 }
 
+func asSettingsClientSlice(raw any) []any {
+	if raw == nil {
+		return []any{}
+	}
+	if clients, ok := raw.([]any); ok {
+		return clients
+	}
+	return []any{}
+}
+
+func asInt64(raw any) int64 {
+	switch value := raw.(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case int32:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case float32:
+		return int64(value)
+	case json.Number:
+		v, _ := value.Int64()
+		return v
+	case string:
+		if value == "" {
+			return 0
+		}
+		v, _ := strconv.ParseInt(value, 10, 64)
+		return v
+	default:
+		return 0
+	}
+}
+
+func legacyShadowsocksClient(settings map[string]any) map[string]any {
+	email, _ := settings["email"].(string)
+	password, _ := settings["password"].(string)
+	method, _ := settings["method"].(string)
+	if strings.TrimSpace(email) == "" || strings.TrimSpace(password) == "" {
+		return nil
+	}
+	client := map[string]any{
+		"email":      email,
+		"password":   password,
+		"method":     method,
+		"enable":     true,
+		"created_at": time.Now().Unix() * 1000,
+		"updated_at": time.Now().Unix() * 1000,
+	}
+	return client
+}
+
+func normalizeSettingsClients(protocol model.Protocol, settings map[string]any) []any {
+	clients := asSettingsClientSlice(settings["clients"])
+	if len(clients) > 0 {
+		return clients
+	}
+	if protocol == model.HTTP || protocol == model.Socks || protocol == model.Mixed {
+		accounts := asSettingsClientSlice(settings["accounts"])
+		if len(accounts) == 0 {
+			return []any{}
+		}
+		normalized := make([]any, 0, len(accounts))
+		for _, raw := range accounts {
+			account, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			email := strings.TrimSpace(fmt.Sprint(account["email"]))
+			if email == "" {
+				email = strings.TrimSpace(fmt.Sprint(account["user"]))
+			}
+			enable := true
+			if rawEnable, ok := account["enable"].(bool); ok {
+				enable = rawEnable
+			}
+			normalized = append(normalized, map[string]any{
+				"email":      email,
+				"password":   strings.TrimSpace(fmt.Sprint(account["pass"])),
+				"enable":     enable,
+				"comment":    strings.TrimSpace(fmt.Sprint(account["comment"])),
+				"egressBps":  asInt64(account["egressBps"]),
+				"ingressBps": asInt64(account["ingressBps"]),
+				"created_at": asInt64(account["created_at"]),
+				"updated_at": asInt64(account["updated_at"]),
+			})
+		}
+		return normalized
+	}
+	if protocol == model.Shadowsocks {
+		if legacy := legacyShadowsocksClient(settings); legacy != nil {
+			return []any{legacy}
+		}
+	}
+	return []any{}
+}
+
+func ensureShadowsocksClientMethod(settings map[string]any, clients []any) []any {
+	method, _ := settings["method"].(string)
+	if strings.TrimSpace(method) == "" {
+		return clients
+	}
+	for i := range clients {
+		client, ok := clients[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := client["method"]; !exists || strings.TrimSpace(fmt.Sprint(client["method"])) == "" {
+			client["method"] = method
+		}
+		clients[i] = client
+	}
+	return clients
+}
+
 // GetInbounds retrieves all inbounds for a specific user.
 // Returns a slice of inbound models with their associated client statistics.
 func (s *InboundService) GetInbounds(userId int) ([]*model.Inbound, error) {
@@ -128,15 +245,24 @@ func (s *InboundService) checkPortExist(listen string, port int, ignoreId int) (
 }
 
 func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, error) {
-	settings := map[string][]model.Client{}
-	json.Unmarshal([]byte(inbound.Settings), &settings)
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		return nil, err
+	}
 	if settings == nil {
 		return nil, fmt.Errorf("setting is null")
 	}
-
-	clients := settings["clients"]
-	if clients == nil {
+	rawClients := normalizeSettingsClients(inbound.Protocol, settings)
+	if len(rawClients) == 0 {
 		return nil, nil
+	}
+	encoded, err := json.Marshal(rawClients)
+	if err != nil {
+		return nil, err
+	}
+	var clients []model.Client
+	if err := json.Unmarshal(encoded, &clients); err != nil {
+		return nil, err
 	}
 	return clients, nil
 }
@@ -620,7 +746,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.Settings = inbound.Settings
 	oldInbound.StreamSettings = inbound.StreamSettings
 	oldInbound.Sniffing = inbound.Sniffing
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
+	if strings.TrimSpace(inbound.Tag) != "" {
+		oldInbound.Tag = inbound.Tag
+	} else if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
 		oldInbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
 	} else {
 		oldInbound.Tag = fmt.Sprintf("inbound-%v:%v", inbound.Listen, inbound.Port)
@@ -711,7 +839,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		return false, err
 	}
 
-	interfaceClients := settings["clients"].([]any)
+	interfaceClients := asSettingsClientSlice(settings["clients"])
 	// Add timestamps for new clients being appended
 	nowTs := time.Now().Unix() * 1000
 	for i := range interfaceClients {
@@ -760,7 +888,10 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		return false, err
 	}
 
-	oldClients := oldSettings["clients"].([]any)
+	oldClients := normalizeSettingsClients(oldInbound.Protocol, oldSettings)
+	if oldInbound.Protocol == model.Shadowsocks {
+		interfaceClients = ensureShadowsocksClientMethod(oldSettings, interfaceClients)
+	}
 	oldClients = append(oldClients, interfaceClients...)
 
 	oldSettings["clients"] = oldClients
@@ -844,7 +975,7 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 		client_key = "email"
 	}
 
-	interfaceClients := settings["clients"].([]any)
+	interfaceClients := normalizeSettingsClients(oldInbound.Protocol, settings)
 	var newClients []any
 	needApiDel := false
 	for _, client := range interfaceClients {
@@ -934,7 +1065,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		return false, err
 	}
 
-	interfaceClients := settings["clients"].([]any)
+	interfaceClients := asSettingsClientSlice(settings["clients"])
 
 	oldInbound, err := s.GetInbound(data.Id)
 	if err != nil {
@@ -989,7 +1120,10 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	if err != nil {
 		return false, err
 	}
-	settingsClients := oldSettings["clients"].([]any)
+	settingsClients := normalizeSettingsClients(oldInbound.Protocol, oldSettings)
+	if oldInbound.Protocol == model.Shadowsocks {
+		interfaceClients = ensureShadowsocksClientMethod(oldSettings, interfaceClients)
+	}
 	// Preserve created_at and set updated_at for the replacing client
 	var preservedCreated any
 	if clientIndex >= 0 && clientIndex < len(settingsClients) {

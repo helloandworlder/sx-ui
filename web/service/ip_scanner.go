@@ -57,23 +57,33 @@ func (s *IpScannerService) ScanPublicIps() error {
 	}
 
 	// Also scan local interfaces for additional IPs
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err == nil {
 		seen := make(map[string]bool)
-		if mainIp != "" {
-			seen[mainIp] = true
+		for _, item := range results {
+			seen[item.Ip] = true
 		}
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsPrivate() || ipNet.IP.IsLinkLocalUnicast() {
+		for _, iface := range ifaces {
+			if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
 				continue
 			}
-			ip := ipNet.IP.String()
-			if !seen[ip] {
+			addrs, addrErr := iface.Addrs()
+			if addrErr != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				ipNet, ok := addr.(*net.IPNet)
+				if !ok || ipNet.IP == nil || ipNet.IP.IsLoopback() || ipNet.IP.IsPrivate() || ipNet.IP.IsLinkLocalUnicast() {
+					continue
+				}
+				ip := ipNet.IP.String()
+				if seen[ip] {
+					continue
+				}
 				seen[ip] = true
 				results = append(results, PublicIpInfo{
 					Ip:        ip,
-					Interface: ipNet.IP.String(),
+					Interface: iface.Name,
 					LastSeen:  time.Now().UTC().Format(time.RFC3339),
 				})
 			}

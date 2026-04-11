@@ -59,6 +59,10 @@ class DBInbound {
         return this.protocol === Protocols.HTTP;
     }
 
+    get isSocks() {
+        return this.protocol === Protocols.SOCKS;
+    }
+
     get isWireguard() {
         return this.protocol === Protocols.WIREGUARD;
     }
@@ -124,6 +128,9 @@ class DBInbound {
             case Protocols.VMESS:
             case Protocols.VLESS:
             case Protocols.TROJAN:
+            case Protocols.HTTP:
+            case Protocols.SOCKS:
+            case Protocols.MIXED:
                 return true;
             case Protocols.SHADOWSOCKS:
                 return this.toInbound().isSSMultiUser;

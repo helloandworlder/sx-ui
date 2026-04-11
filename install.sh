@@ -15,8 +15,18 @@ GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/
 
 cur_dir=$(pwd)
 
-xui_folder="${XUI_MAIN_FOLDER:=/usr/local/sx-ui}"
+xui_instance="${XUI_INSTANCE:=main}"
+xui_root_folder="${XUI_ROOT_FOLDER:=/usr/local/sx-ui}"
+xui_folder="${XUI_MAIN_FOLDER:=${xui_root_folder}/${xui_instance}}"
 xui_service="${XUI_SERVICE:=/etc/systemd/system}"
+xui_db_folder="${XUI_DB_FOLDER:=/etc/x-ui/${xui_instance}}"
+xui_log_folder="${XUI_LOG_FOLDER:=/var/log/x-ui/${xui_instance}}"
+xui_env_file="${XUI_ENV_FILE:=/etc/default/x-ui-${xui_instance}}"
+xui_service_name="${XUI_SERVICE_NAME:=x-ui-${xui_instance}}"
+export XUI_INSTANCE="${xui_instance}"
+export XUI_DB_FOLDER="${xui_db_folder}"
+export XUI_LOG_FOLDER="${xui_log_folder}"
+export XUI_BIN_FOLDER="${xui_folder}/bin"
 
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}Fatal error: ${plain} Please run this script with root privilege \n " && exit 1
@@ -691,7 +701,7 @@ configure_sxui_node() {
     fi
 
     # Write to database via x-ui CLI (or sqlite3 directly)
-    local db_path="${xui_folder}/db/x-ui.db"
+    local db_path="${xui_db_folder}/x-ui.db"
     if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$db_path" ]]; then
         sqlite3 "$db_path" "INSERT OR REPLACE INTO node_metas (key, value) VALUES ('api_key', '${api_key}');"
         sqlite3 "$db_path" "INSERT OR REPLACE INTO node_metas (key, value) VALUES ('node_type', '${node_type}');"
@@ -704,12 +714,49 @@ configure_sxui_node() {
     echo -e "${green}═══════════════════════════════════════════${plain}"
     echo -e "${green}  Node Type:       ${blue}${node_type}${plain}"
     echo -e "${green}  API Key:         ${blue}${api_key}${plain}"
+    echo -e "${green}  Instance:        ${blue}${xui_instance}${plain}"
     echo -e "${green}  GeoIP Block CN:  ${blue}${geoip_block}${plain}"
     echo -e "${green}═══════════════════════════════════════════${plain}"
     echo -e ""
     echo -e "${yellow}⚠  Save the API Key! You will need it to register this node in GoSea.${plain}"
     echo -e "${yellow}   Use this header to authenticate: X-API-Key: ${api_key}${plain}"
     echo -e ""
+}
+
+write_instance_env() {
+    mkdir -p "$(dirname "${xui_env_file}")" "${xui_db_folder}" "${xui_log_folder}"
+    cat > "${xui_env_file}" <<EOF
+XUI_INSTANCE=${xui_instance}
+XUI_EXEC_PATH=${xui_folder}/x-ui
+XUI_BIN_FOLDER=${xui_folder}/bin
+XUI_DB_FOLDER=${xui_db_folder}
+XUI_LOG_FOLDER=${xui_log_folder}
+XRAY_VMESS_AEAD_FORCED=false
+EOF
+    chmod 640 "${xui_env_file}"
+}
+
+write_systemd_service() {
+    cat > "${xui_service}/${xui_service_name}.service" <<EOF
+[Unit]
+Description=SX-UI Service (${xui_instance})
+After=network.target
+Wants=network.target
+
+[Service]
+EnvironmentFile=-${xui_env_file}
+Type=simple
+WorkingDirectory=${xui_folder}
+ExecStart=${xui_folder}/x-ui
+ExecReload=kill -USR1 \$MAINPID
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chown root:root "${xui_service}/${xui_service_name}.service" >/dev/null 2>&1
+    chmod 644 "${xui_service}/${xui_service_name}.service" >/dev/null 2>&1
 }
 
 config_after_install() {
@@ -886,7 +933,7 @@ install_x-ui() {
         if [[ $release == "alpine" ]]; then
             rc-service x-ui stop
         else
-            systemctl stop x-ui
+            systemctl stop "${xui_service_name}" >/dev/null 2>&1 || true
         fi
         rm ${xui_folder}/ -rf
     fi
@@ -909,7 +956,8 @@ install_x-ui() {
     # Update x-ui cli and se set permission
     mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
     chmod +x /usr/bin/x-ui
-    mkdir -p /var/log/x-ui
+    mkdir -p "${xui_db_folder}" "${xui_log_folder}"
+    write_instance_env
     config_after_install
 
     # Etckeeper compatibility
@@ -936,82 +984,11 @@ install_x-ui() {
         rc-update add x-ui
         rc-service x-ui start
     else
-        # Install systemd service file
-        service_installed=false
-        
-        if [ -f "x-ui.service" ]; then
-            echo -e "${green}Found x-ui.service in extracted files, installing...${plain}"
-            cp -f x-ui.service ${xui_service}/ >/dev/null 2>&1
-            if [[ $? -eq 0 ]]; then
-                service_installed=true
-            fi
-        fi
-        
-        if [ "$service_installed" = false ]; then
-            case "${release}" in
-                ubuntu | debian | armbian)
-                    if [ -f "x-ui.service.debian" ]; then
-                        echo -e "${green}Found x-ui.service.debian in extracted files, installing...${plain}"
-                        cp -f x-ui.service.debian ${xui_service}/x-ui.service >/dev/null 2>&1
-                        if [[ $? -eq 0 ]]; then
-                            service_installed=true
-                        fi
-                    fi
-                ;;
-                arch | manjaro | parch)
-                    if [ -f "x-ui.service.arch" ]; then
-                        echo -e "${green}Found x-ui.service.arch in extracted files, installing...${plain}"
-                        cp -f x-ui.service.arch ${xui_service}/x-ui.service >/dev/null 2>&1
-                        if [[ $? -eq 0 ]]; then
-                            service_installed=true
-                        fi
-                    fi
-                ;;
-                *)
-                    if [ -f "x-ui.service.rhel" ]; then
-                        echo -e "${green}Found x-ui.service.rhel in extracted files, installing...${plain}"
-                        cp -f x-ui.service.rhel ${xui_service}/x-ui.service >/dev/null 2>&1
-                        if [[ $? -eq 0 ]]; then
-                            service_installed=true
-                        fi
-                    fi
-                ;;
-            esac
-        fi
-        
-        # If service file not found in tar.gz, download from GitHub
-        if [ "$service_installed" = false ]; then
-            echo -e "${yellow}Service files not found in tar.gz, downloading from GitHub...${plain}"
-            case "${release}" in
-                ubuntu | debian | armbian)
-                    curl -4fLRo ${xui_service}/x-ui.service ${GITHUB_RAW_BASE}/x-ui.service.debian >/dev/null 2>&1
-                ;;
-                arch | manjaro | parch)
-                    curl -4fLRo ${xui_service}/x-ui.service ${GITHUB_RAW_BASE}/x-ui.service.arch >/dev/null 2>&1
-                ;;
-                *)
-                    curl -4fLRo ${xui_service}/x-ui.service ${GITHUB_RAW_BASE}/x-ui.service.rhel >/dev/null 2>&1
-                ;;
-            esac
-            
-            if [[ $? -ne 0 ]]; then
-                echo -e "${red}Failed to install x-ui.service from GitHub${plain}"
-                exit 1
-            fi
-            service_installed=true
-        fi
-        
-        if [ "$service_installed" = true ]; then
-            echo -e "${green}Setting up systemd unit...${plain}"
-            chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
-            chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
-            systemctl daemon-reload
-            systemctl enable x-ui
-            systemctl start x-ui
-        else
-            echo -e "${red}Failed to install x-ui.service file${plain}"
-            exit 1
-        fi
+        echo -e "${green}Setting up systemd unit...${plain}"
+        write_systemd_service
+        systemctl daemon-reload
+        systemctl enable "${xui_service_name}"
+        systemctl start "${xui_service_name}"
     fi
     
     echo -e "${green}x-ui ${tag_version}${plain} installation finished, it is running now..."

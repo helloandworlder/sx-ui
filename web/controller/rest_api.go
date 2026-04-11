@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/helloandworlder/sx-ui/v2/database/model"
 	"github.com/helloandworlder/sx-ui/v2/logger"
@@ -15,16 +17,15 @@ import (
 
 // RestAPIController exposes a RESTful /api/v1 surface for GoSea management.
 type RestAPIController struct {
-	inboundService       service.InboundService
-	outboundService      service.OutboundCrudService
-	routingService       service.RoutingCrudService
-	rateLimitService     service.RateLimitService
-	rateLimitSyncService service.RateLimitSyncService
-	configSeqService     service.ConfigSeqService
-	nodeMetaService      service.NodeMetaService
-	xrayService          service.XrayService
-	xrayDynamic          service.XrayDynamicService
-	ipScannerService     service.IpScannerService
+	inboundService   service.InboundService
+	outboundService  service.OutboundCrudService
+	routingService   service.RoutingCrudService
+	rateLimitService service.RateLimitService
+	configSeqService service.ConfigSeqService
+	nodeMetaService  service.NodeMetaService
+	xrayService      service.XrayService
+	xrayDynamic      service.XrayDynamicService
+	ipScannerService service.IpScannerService
 }
 
 func NewRestAPIController(g *gin.RouterGroup) *RestAPIController {
@@ -172,7 +173,11 @@ func (a *RestAPIController) createInbound(c *gin.Context) {
 	}
 	// Allow creating inbound without clients (empty settings)
 	if inbound.Settings == "" {
-		inbound.Settings = `{"clients":[]}`
+		if isAccountInboundProtocol(inbound.Protocol) {
+			inbound.Settings = `{"accounts":[]}`
+		} else {
+			inbound.Settings = `{"clients":[]}`
+		}
 	}
 	result, needRestart, err := a.inboundService.AddInbound(&inbound)
 	if err != nil {
@@ -256,10 +261,13 @@ func (a *RestAPIController) listClients(c *gin.Context) {
 		a.fail(c, http.StatusNotFound, "inbound not found")
 		return
 	}
-	// parse clients from settings JSON
 	var settings map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if isAccountInboundProtocol(inbound.Protocol) {
+		a.ok(c, gin.H{"clients": settings["accounts"]})
 		return
 	}
 	a.ok(c, gin.H{"clients": settings["clients"]})
@@ -273,10 +281,108 @@ type AddClientRequest struct {
 	Clients []model.Client `json:"clients"`
 	// HTTP/Socks5/Mixed fields
 	Accounts []struct {
-		User  string `json:"user"`
-		Pass  string `json:"pass"`
-		Email string `json:"email"` // UUIDv7 internal identifier
+		User       string `json:"user"`
+		Pass       string `json:"pass"`
+		Email      string `json:"email"` // UUIDv7 internal identifier
+		Enable     *bool  `json:"enable"`
+		Comment    string `json:"comment"`
+		EgressBps  int64  `json:"egressBps"`
+		IngressBps int64  `json:"ingressBps"`
 	} `json:"accounts"`
+}
+
+type inboundAccountPayload struct {
+	User       string `json:"user"`
+	Pass       string `json:"pass"`
+	Email      string `json:"email"`
+	Enable     *bool  `json:"enable"`
+	Comment    string `json:"comment"`
+	EgressBps  int64  `json:"egressBps"`
+	IngressBps int64  `json:"ingressBps"`
+	CreatedAt  int64  `json:"created_at,omitempty"`
+	UpdatedAt  int64  `json:"updated_at,omitempty"`
+}
+
+func (a *RestAPIController) syncAccountRateLimit(email string, egressBps, ingressBps int64) error {
+	if strings.TrimSpace(email) == "" {
+		return nil
+	}
+	if egressBps <= 0 && ingressBps <= 0 {
+		return a.rateLimitService.Remove(email)
+	}
+	_, err := a.rateLimitService.Set(email, egressBps, ingressBps)
+	return err
+}
+
+func boolOrDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func isAccountInboundProtocol(protocol model.Protocol) bool {
+	switch protocol {
+	case model.HTTP, model.Socks, model.Mixed:
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeShadowsocksClients(
+	inbound *model.Inbound,
+	clients []model.Client,
+) error {
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		return err
+	}
+
+	method, _ := settings["method"].(string)
+	existing, _ := settings["clients"].([]any)
+	if len(existing) == 0 {
+		email, _ := settings["email"].(string)
+		password, _ := settings["password"].(string)
+		if strings.TrimSpace(email) != "" && strings.TrimSpace(password) != "" {
+			nowTs := time.Now().UnixMilli()
+			existing = append(existing, map[string]any{
+				"email":      email,
+				"password":   password,
+				"method":     method,
+				"enable":     true,
+				"created_at": nowTs,
+				"updated_at": nowTs,
+			})
+		}
+	}
+
+	nowTs := time.Now().UnixMilli()
+	for _, client := range clients {
+		existing = append(existing, map[string]any{
+			"email":      client.Email,
+			"password":   client.Password,
+			"method":     method,
+			"enable":     client.Enable,
+			"comment":    client.Comment,
+			"limitIp":    client.LimitIP,
+			"totalGB":    client.TotalGB,
+			"expiryTime": client.ExpiryTime,
+			"subId":      client.SubID,
+			"tgId":       client.TgID,
+			"reset":      client.Reset,
+			"created_at": nowTs,
+			"updated_at": nowTs,
+		})
+	}
+
+	settings["clients"] = existing
+	newSettings, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	inbound.Settings = string(newSettings)
+	return nil
 }
 
 func (a *RestAPIController) addClient(c *gin.Context) {
@@ -304,15 +410,19 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 	}
 
 	switch inbound.Protocol {
-	case model.HTTP, model.Mixed:
-		// HTTP/Mixed: accounts format [{"user":"x","pass":"y","email":"line-uuid"}]
+	case model.HTTP, model.Socks, model.Mixed:
+		// HTTP/Socks/Mixed: accounts format [{"user":"x","pass":"y","email":"line-uuid"}]
 		if len(req.Accounts) == 0 && len(req.Clients) > 0 {
 			// Convert from clients format: use email as both user and pass
 			for _, cl := range req.Clients {
 				req.Accounts = append(req.Accounts, struct {
-					User  string `json:"user"`
-					Pass  string `json:"pass"`
-					Email string `json:"email"`
+					User       string `json:"user"`
+					Pass       string `json:"pass"`
+					Email      string `json:"email"`
+					Enable     *bool  `json:"enable"`
+					Comment    string `json:"comment"`
+					EgressBps  int64  `json:"egressBps"`
+					IngressBps int64  `json:"ingressBps"`
 				}{User: cl.Email, Pass: cl.Email, Email: cl.Email})
 			}
 		}
@@ -321,9 +431,18 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 		json.Unmarshal([]byte(inbound.Settings), &existSettings)
 		existAccounts, _ := existSettings["accounts"].([]any)
 		for _, acc := range req.Accounts {
+			nowTs := time.Now().UnixMilli()
+			enable := boolOrDefault(acc.Enable, true)
 			existAccounts = append(existAccounts, map[string]any{
 				"user": acc.User, "pass": acc.Pass, "email": acc.Email,
+				"enable": enable, "comment": acc.Comment,
+				"egressBps": acc.EgressBps, "ingressBps": acc.IngressBps,
+				"created_at": nowTs, "updated_at": nowTs,
 			})
+			if err := a.syncAccountRateLimit(acc.Email, acc.EgressBps, acc.IngressBps); err != nil {
+				a.fail(c, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		existSettings["accounts"] = existAccounts
 		newSettings, _ := json.Marshal(existSettings)
@@ -335,6 +454,25 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 		}
 		a.xrayService.SetToNeedRestart()
 		a.created(c, req.Accounts)
+
+	case model.Shadowsocks:
+		if len(req.Clients) == 0 {
+			a.fail(c, http.StatusBadRequest, "no clients provided")
+			return
+		}
+		if err := mergeShadowsocksClients(inbound, req.Clients); err != nil {
+			a.fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_, needRestart, err := a.inboundService.UpdateInbound(inbound)
+		if err != nil {
+			a.fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if needRestart {
+			a.xrayService.SetToNeedRestart()
+		}
+		a.created(c, req.Clients)
 
 	default:
 		// VMess/VLESS/Trojan/Shadowsocks: clients format
@@ -365,6 +503,78 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 		return
 	}
 	email := c.Param("email")
+
+	inbound, err := a.inboundService.GetInbound(id)
+	if err != nil {
+		a.fail(c, http.StatusNotFound, "inbound not found")
+		return
+	}
+
+	if isAccountInboundProtocol(inbound.Protocol) {
+		var account inboundAccountPayload
+		if err := c.ShouldBindJSON(&account); err != nil {
+			a.fail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		account.Email = email
+		if _, err := a.configSeqService.BumpSeqAndHash(); err != nil {
+			a.fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			a.fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		accounts, _ := settings["accounts"].([]any)
+		found := false
+		for idx, raw := range accounts {
+			item, _ := raw.(map[string]any)
+			accEmail, _ := item["email"].(string)
+			accUser, _ := item["user"].(string)
+			if accEmail != email && accUser != email {
+				continue
+			}
+			if v, ok := item["created_at"].(float64); ok {
+				account.CreatedAt = int64(v)
+			}
+			if account.CreatedAt == 0 {
+				account.CreatedAt = time.Now().UnixMilli()
+			}
+			account.UpdatedAt = time.Now().UnixMilli()
+			enable := true
+			if rawEnable, ok := item["enable"].(bool); ok {
+				enable = rawEnable
+			}
+			enable = boolOrDefault(account.Enable, enable)
+			accounts[idx] = map[string]any{
+				"user": account.User, "pass": account.Pass, "email": account.Email,
+				"enable": enable, "comment": account.Comment,
+				"egressBps": account.EgressBps, "ingressBps": account.IngressBps,
+				"created_at": account.CreatedAt, "updated_at": account.UpdatedAt,
+			}
+			found = true
+			break
+		}
+		if !found {
+			a.fail(c, http.StatusNotFound, "client not found")
+			return
+		}
+		settings["accounts"] = accounts
+		newSettings, _ := json.Marshal(settings)
+		inbound.Settings = string(newSettings)
+		if _, _, err := a.inboundService.UpdateInbound(inbound); err != nil {
+			a.fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := a.syncAccountRateLimit(account.Email, account.EgressBps, account.IngressBps); err != nil {
+			a.fail(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		a.xrayService.SetToNeedRestart()
+		a.ok(c, account)
+		return
+	}
 
 	var client model.Client
 	if err := c.ShouldBindJSON(&client); err != nil {
@@ -417,7 +627,7 @@ func (a *RestAPIController) deleteClient(c *gin.Context) {
 	}
 
 	switch inbound.Protocol {
-	case model.HTTP, model.Mixed:
+	case model.HTTP, model.Socks, model.Mixed:
 		// Remove account by email (or username) from accounts array
 		var settings map[string]any
 		json.Unmarshal([]byte(inbound.Settings), &settings)
@@ -439,6 +649,7 @@ func (a *RestAPIController) deleteClient(c *gin.Context) {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
+		_ = a.rateLimitService.Remove(email)
 		a.xrayService.SetToNeedRestart()
 
 	default:

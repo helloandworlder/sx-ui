@@ -208,7 +208,8 @@
                               <a-icon type="user-add"></a-icon>
                               {{ i18n "pages.client.add"}}
                             </a-menu-item>
-                            <a-menu-item key="addBulkClient">
+                            <a-menu-item key="addBulkClient"
+                              v-if="![Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(dbInbound.protocol)">
                               <a-icon type="usergroup-add"></a-icon>
                               {{ i18n "pages.client.bulk"}}
                             </a-menu-item>
@@ -575,7 +576,7 @@
                       </a-popover>
                     </template>
                     <template slot="expandedRowRender" slot-scope="record">
-                      <a-table :row-key="client => client.id" :columns="isMobile ? innerMobileColumns : innerColumns"
+                      <a-table :row-key="client => client.email || client.id || client.user" :columns="isMobile ? innerMobileColumns : innerColumns"
                         :data-source="getInboundClients(record)" :pagination=pagination(getInboundClients(record))
                         :style="{ margin: `-10px ${isMobile ? '2px' : '22px'} -11px` }">
                         {{template "component/aClientTable"}}
@@ -825,7 +826,7 @@
       },
       getClientCounts(dbInbound, inbound) {
         let clientCount = 0, active = [], deactive = [], depleted = [], expiring = [], online = [], comments = new Map();
-        clients = inbound.clients;
+        clients = [Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(inbound.protocol) ? inbound.settings.accounts : inbound.clients;
         clientStats = dbInbound.clientStats
         now = new Date().getTime()
         if (clients) {
@@ -1151,6 +1152,10 @@
           return -1;
         }
         switch (protocol) {
+          case Protocols.HTTP:
+          case Protocols.SOCKS:
+          case Protocols.MIXED:
+            return clients.findIndex(item => item && item.email === client.email && item.user === client.user);
           case Protocols.TROJAN:
           case Protocols.SHADOWSOCKS:
             return clients.findIndex(item => item && item.password === client.password && item.email === client.email);
@@ -1158,6 +1163,18 @@
         }
       },
       async addClient(clients, dbInboundId, modal) {
+        const dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);
+        if (dbInbound && [Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(dbInbound.protocol)) {
+          const msg = await HttpUtil.postWithModal(
+            `/api/v1/inbounds/${dbInboundId}/clients`,
+            { accounts: clients.map(client => client.toJson ? client.toJson() : client) },
+            modal,
+          );
+          if (msg.success) {
+            await this.getDBInbounds();
+          }
+          return;
+        }
         const data = {
           id: dbInboundId,
           settings: '{"clients": [' + clients.toString() + ']}',
@@ -1165,6 +1182,20 @@
         await this.submit(`/panel/api/inbounds/addClient`, data, modal);
       },
       async updateClient(client, dbInboundId, clientId) {
+        const dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);
+        if (dbInbound && [Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(dbInbound.protocol)) {
+          clientModal.loading(true);
+          const msg = await HttpUtil.put(
+            `/api/v1/inbounds/${dbInboundId}/clients/${encodeURIComponent(client.email)}`,
+            client.toJson ? client.toJson() : client,
+          );
+          clientModal.loading(false);
+          if (msg.success) {
+            clientModal.close();
+            await this.getDBInbounds();
+          }
+          return;
+        }
         const data = {
           id: dbInboundId,
           settings: '{"clients": [' + client.toString() + ']}',
@@ -1207,9 +1238,26 @@
             class: themeSwitcher.currentTheme,
             okText: '{{ i18n "delete"}}',
             cancelText: '{{ i18n "cancel"}}',
-            onOk: () => this.submit(`/panel/api/inbounds/${dbInboundId}/delClient/${clientId}`),
+            onOk: async () => {
+              if ([Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(dbInbound.protocol)) {
+                const msg = await HttpUtil.delete(`/api/v1/inbounds/${dbInboundId}/clients/${encodeURIComponent(client.email)}`);
+                if (msg.success) {
+                  await this.getDBInbounds();
+                }
+                return;
+              }
+              this.submit(`/panel/api/inbounds/${dbInboundId}/delClient/${clientId}`);
+            },
           });
         } else {
+          if ([Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(dbInbound.protocol)) {
+            HttpUtil.delete(`/api/v1/inbounds/${dbInboundId}/clients/${encodeURIComponent(client.email)}`).then(msg => {
+              if (msg.success) {
+                this.getDBInbounds();
+              }
+            });
+            return;
+          }
           this.submit(`/panel/api/inbounds/${dbInboundId}/delClient/${clientId}`);
         }
       },
@@ -1225,7 +1273,7 @@
             if (dbInbound) {
               const inbound = dbInbound.toInbound();
               if (inbound) {
-                const clients = inbound.clients;
+                const clients = [Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(inbound.protocol) ? inbound.settings.accounts : inbound.clients;
                 if (clients.length > 0) {
                   clients.forEach((client) => {
                     if (client['subId'] === currentClient['subId']) {
@@ -1245,6 +1293,9 @@
       },
       getClientId(protocol, client) {
         switch (protocol) {
+          case Protocols.HTTP:
+          case Protocols.SOCKS:
+          case Protocols.MIXED: return client.email || client.user;
           case Protocols.TROJAN: return client.password;
           case Protocols.SHADOWSOCKS: return client.email;
           default: return client.id;
@@ -1281,7 +1332,7 @@
         index = 0;
         if (dbInbound.isMultiUser()) {
           inbound = dbInbound.toInbound();
-          clients = inbound && inbound.clients ? inbound.clients : null;
+          clients = this.getInboundClients(dbInbound);
           if (clients && Array.isArray(clients)) {
             index = this.findIndexOfClient(dbInbound.protocol, clients, client);
             if (index < 0) index = 0;
@@ -1299,8 +1350,7 @@
         this.loading()
         dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);
         if (!dbInbound) return;
-        inbound = dbInbound.toInbound();
-        clients = inbound && inbound.clients ? inbound.clients : null;
+        clients = this.getInboundClients(dbInbound);
         if (!clients || !Array.isArray(clients)) return;
         index = this.findIndexOfClient(dbInbound.protocol, clients, client);
         if (index < 0 || !clients[index]) return;
@@ -1318,6 +1368,9 @@
       getInboundClients(dbInbound) {
         if (!dbInbound) return null;
         const inbound = dbInbound.toInbound();
+        if (inbound && [Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(inbound.protocol)) {
+          return inbound.settings && inbound.settings.accounts ? inbound.settings.accounts : null;
+        }
         return inbound && inbound.clients ? inbound.clients : null;
       },
       resetClientTraffic(client, dbInboundId, confirmation = true) {

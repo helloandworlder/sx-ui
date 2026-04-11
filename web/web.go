@@ -25,6 +25,7 @@ import (
 	"github.com/helloandworlder/sx-ui/v2/web/middleware"
 	"github.com/helloandworlder/sx-ui/v2/web/network"
 	"github.com/helloandworlder/sx-ui/v2/web/service"
+	"github.com/helloandworlder/sx-ui/v2/web/session"
 	"github.com/helloandworlder/sx-ui/v2/web/websocket"
 
 	"github.com/gin-contrib/gzip"
@@ -211,10 +212,17 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 			Path:     "/",
 			MaxAge:   sessionMaxAge * 60, // minutes -> seconds
 			HttpOnly: true,
+			Secure:   !config.IsDebug(),
 			SameSite: http.SameSiteLaxMode,
 		})
 	}
 	engine.Use(sessions.Sessions("3x-ui", store))
+	engine.Use(func(c *gin.Context) {
+		if sessionMaxAge, err := s.settingService.GetSessionMaxAge(); err == nil {
+			session.SetMaxAge(c, sessionMaxAge*60)
+		}
+		c.Next()
+	})
 	engine.Use(func(c *gin.Context) {
 		c.Set("base_path", basePath)
 	})

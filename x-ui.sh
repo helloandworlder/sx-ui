@@ -75,12 +75,31 @@ os_version=""
 os_version=$(grep "^VERSION_ID" /etc/os-release | cut -d '=' -f2 | tr -d '"' | tr -d '.')
 
 # Declare Variables
-xui_folder="${XUI_MAIN_FOLDER:=/usr/local/x-ui}"
+xui_instance="${XUI_INSTANCE:=main}"
+xui_root_folder="${XUI_ROOT_FOLDER:=/usr/local/sx-ui}"
+xui_folder="${XUI_MAIN_FOLDER:=${xui_root_folder}/${xui_instance}}"
 xui_service="${XUI_SERVICE:=/etc/systemd/system}"
-log_folder="${XUI_LOG_FOLDER:=/var/log/x-ui}"
+log_folder="${XUI_LOG_FOLDER:=/var/log/x-ui/${xui_instance}}"
+xui_service_name="${XUI_SERVICE_NAME:=x-ui-${xui_instance}}"
+export XUI_INSTANCE="${xui_instance}"
+export XUI_DB_FOLDER="${XUI_DB_FOLDER:=/etc/x-ui/${xui_instance}}"
+export XUI_LOG_FOLDER="${log_folder}"
+export XUI_BIN_FOLDER="${xui_folder}/bin"
 mkdir -p "${log_folder}"
 iplimit_log_path="${log_folder}/3xipl.log"
 iplimit_banned_log_path="${log_folder}/3xipl-banned.log"
+
+resolve_service_name() {
+    if [[ -f "${xui_service}/${xui_service_name}.service" ]]; then
+        echo "${xui_service_name}"
+        return
+    fi
+    if [[ -f "${xui_service}/x-ui.service" ]]; then
+        echo "x-ui"
+        return
+    fi
+    echo "${xui_service_name}"
+}
 
 confirm() {
     if [[ $# > 1 ]]; then
@@ -198,15 +217,18 @@ uninstall() {
         rc-update del x-ui
         rm /etc/init.d/x-ui -f
     else
-        systemctl stop x-ui
-        systemctl disable x-ui
-        rm ${xui_service}/x-ui.service -f
+        local service_name
+        service_name=$(resolve_service_name)
+        systemctl stop "${service_name}"
+        systemctl disable "${service_name}"
+        rm "${xui_service}/${service_name}.service" -f
         systemctl daemon-reload
         systemctl reset-failed
     fi
 
-    rm /etc/x-ui/ -rf
-    rm ${xui_folder}/ -rf
+    rm "/etc/x-ui/${xui_instance}/" -rf
+    rm "${xui_folder}/" -rf
+    rm "/etc/default/x-ui-${xui_instance}" -f
 
     echo ""
     echo -e "Uninstalled Successfully.\n"
@@ -354,7 +376,7 @@ start() {
         if [[ $release == "alpine" ]]; then
             rc-service x-ui start
         else
-            systemctl start x-ui
+            systemctl start "$(resolve_service_name)"
         fi
         sleep 2
         check_status
@@ -379,7 +401,7 @@ stop() {
         if [[ $release == "alpine" ]]; then
             rc-service x-ui stop
         else
-            systemctl stop x-ui
+            systemctl stop "$(resolve_service_name)"
         fi
         sleep 2
         check_status
@@ -399,7 +421,7 @@ restart() {
     if [[ $release == "alpine" ]]; then
         rc-service x-ui restart
     else
-        systemctl restart x-ui
+        systemctl restart "$(resolve_service_name)"
     fi
     sleep 2
     check_status
@@ -414,7 +436,7 @@ restart() {
 }
 
 restart_xray() {
-    systemctl reload x-ui
+    systemctl reload "$(resolve_service_name)"
     LOGI "xray-core Restart signal sent successfully, Please check the log information to confirm whether xray restarted successfully"
     sleep 2
     show_xray_status
@@ -427,7 +449,7 @@ status() {
     if [[ $release == "alpine" ]]; then
         rc-service x-ui status
     else
-        systemctl status x-ui -l
+        systemctl status "$(resolve_service_name)" -l
     fi
     if [[ $# == 0 ]]; then
         before_show_menu
@@ -438,7 +460,7 @@ enable() {
     if [[ $release == "alpine" ]]; then
         rc-update add x-ui default
     else
-        systemctl enable x-ui
+        systemctl enable "$(resolve_service_name)"
     fi
     if [[ $? == 0 ]]; then
         LOGI "x-ui Set to boot automatically on startup successfully"
@@ -455,7 +477,7 @@ disable() {
     if [[ $release == "alpine" ]]; then
         rc-update del x-ui
     else
-        systemctl disable x-ui
+        systemctl disable "$(resolve_service_name)"
     fi
     if [[ $? == 0 ]]; then
         LOGI "x-ui Autostart Cancelled successfully"
@@ -500,7 +522,7 @@ show_log() {
             show_menu
             ;;
         1)
-            journalctl -u x-ui -e --no-pager -f -p debug
+            journalctl -u "$(resolve_service_name)" -e --no-pager -f -p debug
             if [[ $# == 0 ]]; then
                 before_show_menu
             fi
@@ -632,10 +654,12 @@ check_status() {
             return 1
         fi
     else
-        if [[ ! -f ${xui_service}/x-ui.service ]]; then
+        local service_name
+        service_name=$(resolve_service_name)
+        if [[ ! -f ${xui_service}/${service_name}.service ]]; then
             return 2
         fi
-        temp=$(systemctl status x-ui | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1)
+        temp=$(systemctl status "${service_name}" | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1)
         if [[ "${temp}" == "running" ]]; then
             return 0
         else
@@ -652,7 +676,7 @@ check_enabled() {
             return 1
         fi
     else
-        temp=$(systemctl is-enabled x-ui)
+        temp=$(systemctl is-enabled "$(resolve_service_name)")
         if [[ "${temp}" == "enabled" ]]; then
             return 0
         else

@@ -17,6 +17,7 @@ const (
 	VLESS       Protocol = "vless"
 	Tunnel      Protocol = "tunnel"
 	HTTP        Protocol = "http"
+	Socks       Protocol = "socks"
 	Trojan      Protocol = "trojan"
 	Shadowsocks Protocol = "shadowsocks"
 	Mixed       Protocol = "mixed"

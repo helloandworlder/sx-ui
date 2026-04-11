@@ -4,6 +4,7 @@ const Protocols = {
     TROJAN: 'trojan',
     SHADOWSOCKS: 'shadowsocks',
     TUNNEL: 'tunnel',
+    SOCKS: 'socks',
     MIXED: 'mixed',
     HTTP: 'http',
     WIREGUARD: 'wireguard',
@@ -1823,6 +1824,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.TROJAN: return new Inbound.TrojanSettings(protocol);
             case Protocols.SHADOWSOCKS: return new Inbound.ShadowsocksSettings(protocol);
             case Protocols.TUNNEL: return new Inbound.TunnelSettings(protocol);
+            case Protocols.SOCKS: return new Inbound.MixedSettings(protocol);
             case Protocols.MIXED: return new Inbound.MixedSettings(protocol);
             case Protocols.HTTP: return new Inbound.HttpSettings(protocol);
             case Protocols.WIREGUARD: return new Inbound.WireguardSettings(protocol);
@@ -1838,6 +1840,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.TROJAN: return Inbound.TrojanSettings.fromJson(json);
             case Protocols.SHADOWSOCKS: return Inbound.ShadowsocksSettings.fromJson(json);
             case Protocols.TUNNEL: return Inbound.TunnelSettings.fromJson(json);
+            case Protocols.SOCKS: return Inbound.MixedSettings.fromJson(json);
             case Protocols.MIXED: return Inbound.MixedSettings.fromJson(json);
             case Protocols.HTTP: return Inbound.HttpSettings.fromJson(json);
             case Protocols.WIREGUARD: return Inbound.WireguardSettings.fromJson(json);
@@ -2564,15 +2567,45 @@ Inbound.MixedSettings = class extends Inbound.Settings {
     }
 };
 Inbound.MixedSettings.SocksAccount = class extends XrayCommonClass {
-    constructor(user = RandomUtil.randomSeq(10), pass = RandomUtil.randomSeq(10), email = '') {
+    constructor(user = RandomUtil.randomSeq(10), pass = RandomUtil.randomSeq(10), email = RandomUtil.randomLowerAndNum(8), enable = true, comment = '', egressBps = 0, ingressBps = 0, created_at = undefined, updated_at = undefined) {
         super();
         this.user = user;
         this.pass = pass;
         this.email = email;
+        this.enable = enable;
+        this.comment = comment;
+        this.egressBps = egressBps;
+        this.ingressBps = ingressBps;
+        this.created_at = created_at;
+        this.updated_at = updated_at;
     }
 
     static fromJson(json = {}) {
-        return new Inbound.MixedSettings.SocksAccount(json.user, json.pass, json.email);
+        return new Inbound.MixedSettings.SocksAccount(
+            json.user,
+            json.pass,
+            json.email,
+            json.enable ?? true,
+            json.comment,
+            json.egressBps,
+            json.ingressBps,
+            json.created_at,
+            json.updated_at,
+        );
+    }
+
+    toJson() {
+        return {
+            user: this.user,
+            pass: this.pass,
+            email: this.email,
+            enable: this.enable,
+            comment: this.comment,
+            egressBps: this.egressBps,
+            ingressBps: this.ingressBps,
+            created_at: this.created_at,
+            updated_at: this.updated_at,
+        };
     }
 };
 
@@ -2612,15 +2645,45 @@ Inbound.HttpSettings = class extends Inbound.Settings {
 };
 
 Inbound.HttpSettings.HttpAccount = class extends XrayCommonClass {
-    constructor(user = RandomUtil.randomSeq(10), pass = RandomUtil.randomSeq(10), email = '') {
+    constructor(user = RandomUtil.randomSeq(10), pass = RandomUtil.randomSeq(10), email = RandomUtil.randomLowerAndNum(8), enable = true, comment = '', egressBps = 0, ingressBps = 0, created_at = undefined, updated_at = undefined) {
         super();
         this.user = user;
         this.pass = pass;
         this.email = email;
+        this.enable = enable;
+        this.comment = comment;
+        this.egressBps = egressBps;
+        this.ingressBps = ingressBps;
+        this.created_at = created_at;
+        this.updated_at = updated_at;
     }
 
     static fromJson(json = {}) {
-        return new Inbound.HttpSettings.HttpAccount(json.user, json.pass, json.email);
+        return new Inbound.HttpSettings.HttpAccount(
+            json.user,
+            json.pass,
+            json.email,
+            json.enable ?? true,
+            json.comment,
+            json.egressBps,
+            json.ingressBps,
+            json.created_at,
+            json.updated_at,
+        );
+    }
+
+    toJson() {
+        return {
+            user: this.user,
+            pass: this.pass,
+            email: this.email,
+            enable: this.enable,
+            comment: this.comment,
+            egressBps: this.egressBps,
+            ingressBps: this.ingressBps,
+            created_at: this.created_at,
+            updated_at: this.updated_at,
+        };
     }
 };
 

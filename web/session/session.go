@@ -5,6 +5,7 @@ package session
 import (
 	"encoding/gob"
 	"net/http"
+	"strings"
 
 	"github.com/helloandworlder/sx-ui/v2/database/model"
 
@@ -39,6 +40,7 @@ func SetMaxAge(c *gin.Context, maxAge int) {
 		Path:     defaultPath,
 		MaxAge:   maxAge,
 		HttpOnly: true,
+		Secure:   isSecureRequest(c),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -75,6 +77,20 @@ func ClearSession(c *gin.Context) {
 		Path:     defaultPath,
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   isSecureRequest(c),
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+func isSecureRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	if c.Request.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return strings.EqualFold(c.GetHeader("X-Forwarded-Ssl"), "on")
 }

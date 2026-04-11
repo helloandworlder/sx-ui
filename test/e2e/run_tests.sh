@@ -4,6 +4,7 @@ set -euo pipefail
 PANEL="${PANEL_URL:-http://sx-ui:2053}"
 XRAY="/app/bin/xray-linux-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
 IFS=: read -r S5H S5P S5U S5PW <<< "${SOCKS5_OUT:-207.21.125.221:9878:uIVTyaTFkeA:vr0Pq08jEHBQ}"
+CHAIN_ECHO_URL="${CHAIN_ECHO_URL:-http://httpbin.org/ip}"
 API_KEY=""; P=0; F=0; T=0; SRV="sx-e2e-server"
 
 # Use python3 as jq
@@ -133,15 +134,30 @@ R=$(curl -sf --socks5 "${SRV}:20084" --proxy-user "sU:sP" --max-time 15 $ECHO/ip
 log "Phase 6: XrayCore client connectivity"
 
 xtest() {
-  local name=$1 lport=$2 cfg=$3
+  local name=$1 lport=$2 cfg=$3 target="${4:-$ECHO/ip}" expected="${5:-}"
   cat > "/tmp/c-${name}.json" <<EOF
 {"log":{"loglevel":"warning"},"inbounds":[{"listen":"127.0.0.1","port":${lport},"protocol":"socks","settings":{"udp":true}}],"outbounds":[${cfg}]}
 EOF
   $XRAY run -c "/tmp/c-${name}.json" &>/tmp/x-${name}.log &
   local pid=$!; sleep 2
-  local r; r=$(curl -sf --socks5 "127.0.0.1:${lport}" --max-time 15 $ECHO/ip 2>/dev/null) || r=""
+  local r; r=$(curl -sf --socks5 "127.0.0.1:${lport}" --max-time 20 "$target" 2>/dev/null) || r=""
   kill $pid 2>/dev/null; wait $pid 2>/dev/null||true
-  [ -n "$r" ] && ok "$name → $(echo $r|j origin)" || { ng "$name"; tail -3 /tmp/x-${name}.log 2>/dev/null; }
+  if [ -z "$r" ]; then
+    ng "$name"
+    tail -3 /tmp/x-${name}.log 2>/dev/null
+    return
+  fi
+  if [ -n "$expected" ]; then
+    local actual; actual=$(echo "$r" | j origin)
+    if [ "$actual" = "$expected" ]; then
+      ok "$name → $actual"
+    else
+      ng "$name expected=$expected actual=$actual"
+      tail -3 /tmp/x-${name}.log 2>/dev/null
+    fi
+    return
+  fi
+  ok "$name → $(echo "$r"|j origin)"
 }
 
 xtest VMess 30080 "{\"protocol\":\"vmess\",\"settings\":{\"vnext\":[{\"address\":\"${SRV}\",\"port\":20080,\"users\":[{\"id\":\"${VU}\",\"alterId\":0,\"security\":\"auto\"}]}]},\"streamSettings\":{\"network\":\"tcp\"}}"
@@ -153,18 +169,21 @@ log "Phase 7: VMess → Socks5 exit chain"
 api POST /routes "{\"priority\":1,\"ruleJson\":\"{\\\"type\\\":\\\"field\\\",\\\"user\\\":[\\\"em-vm\\\"],\\\"outboundTag\\\":\\\"s5exit\\\"}\",\"enabled\":true}"
 [ "$HC" = "201" ] && ok "Route em-vm → s5exit" || ng "Route $HC"
 api POST /xray/restart; sleep 3
-# VMess→S5 chain needs external net (socks5 exit is a remote server)
-# Test with echo server through the chain — if no external net, this tests the chain path internally
-xtest "VMess→S5" 30090 "{\"protocol\":\"vmess\",\"settings\":{\"vnext\":[{\"address\":\"${SRV}\",\"port\":20080,\"users\":[{\"id\":\"${VU}\",\"alterId\":0,\"security\":\"auto\"}]}]},\"streamSettings\":{\"network\":\"tcp\"}}"
-# Note: chain test may fail if Docker has no external network (socks5 exit is 207.21.x.x)
+CHAIN_EXPECTED=$(curl -sf --socks5 "${S5H}:${S5P}" --proxy-user "${S5U}:${S5PW}" --max-time 20 "${CHAIN_ECHO_URL}" 2>/dev/null | j origin || true)
+if [ -n "$CHAIN_EXPECTED" ]; then
+  ok "S5 exit origin → ${CHAIN_EXPECTED}"
+  xtest "VMess→S5" 30090 "{\"protocol\":\"vmess\",\"settings\":{\"vnext\":[{\"address\":\"${SRV}\",\"port\":20080,\"users\":[{\"id\":\"${VU}\",\"alterId\":0,\"security\":\"auto\"}]}]},\"streamSettings\":{\"network\":\"tcp\"}}" "${CHAIN_ECHO_URL}" "${CHAIN_EXPECTED}"
+else
+  ng "S5 exit baseline"
+fi
 
 # ── Phase 8: Real rate limit verification ──
-# SOCKS5 has 1 Mbps (125000 Bps) limit. Download 256KB → should take ~2s.
-# Without limit: <0.5s on local network.
-log "Phase 8: Rate limit verification (256KB @ 1Mbps limit)"
+# SOCKS5 has 1 Mbps (125000 Bps) limit. Use a 1MB transfer so the average
+# converges and we don't mistake a short token-bucket burst for a bypass.
+log "Phase 8: Rate limit verification (1MB @ 1Mbps limit)"
 
 S=$(date +%s%N)
-curl -sf --socks5 "${SRV}:20084" --proxy-user "sU:sP" --max-time 30 -o /tmp/dl "$ECHO/data/256" 2>/dev/null || true
+curl -sf --socks5 "${SRV}:20084" --proxy-user "sU:sP" --max-time 60 -o /tmp/dl "$ECHO/data/1024" 2>/dev/null || true
 E=$(date +%s%N)
 
 if [ -f /tmp/dl ]; then
@@ -173,15 +192,13 @@ if [ -f /tmp/dl ]; then
     KBPS=$(( SZ * 8 / (MS + 1) ))
     rm -f /tmp/dl
 
-    if [ "$SZ" -ge 200000 ]; then
+    if [ "$SZ" -ge 900000 ]; then
         ok "Downloaded ${SZ} bytes in ${MS}ms (${KBPS} Kbps)"
-        # At 1Mbps=1000Kbps, 256KB should take ~2048ms. Allow margin.
-        if [ "$MS" -ge 1500 ]; then
-            ok "Rate limit EFFECTIVE: ${KBPS} Kbps << unlimited speed"
-        elif [ "$MS" -ge 500 ]; then
-            ok "Rate limit PARTIAL: ${KBPS} Kbps (some throttling observed)"
+        # 1MB at 1Mbps should take about 8.4s. Allow a wide margin for startup and scheduling jitter.
+        if [ "$MS" -ge 6000 ] && [ "$MS" -le 14000 ]; then
+            ok "Rate limit EFFECTIVE: ${KBPS} Kbps matches long-window throughput"
         else
-            ng "Rate limit NOT effective: ${MS}ms too fast (expected >1500ms)"
+            ng "Rate limit out of range: ${MS}ms (expected 6000-14000ms)"
         fi
     else
         ng "Incomplete download: ${SZ} bytes"

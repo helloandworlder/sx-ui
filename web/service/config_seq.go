@@ -20,6 +20,39 @@ type SeqInfo struct {
 	Hash string `json:"hash"`
 }
 
+type configHashInbound struct {
+	Remark         string         `json:"remark"`
+	Enable         bool           `json:"enable"`
+	ExpiryTime     int64          `json:"expiryTime"`
+	Listen         string         `json:"listen"`
+	Port           int            `json:"port"`
+	Protocol       model.Protocol `json:"protocol"`
+	Settings       string         `json:"settings"`
+	StreamSettings string         `json:"streamSettings"`
+	Tag            string         `json:"tag"`
+	Sniffing       string         `json:"sniffing"`
+}
+
+type configHashOutbound struct {
+	Tag         string `json:"tag"`
+	Protocol    string `json:"protocol"`
+	Settings    string `json:"settings"`
+	SendThrough string `json:"sendThrough"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type configHashRoute struct {
+	Priority int    `json:"priority"`
+	RuleJson string `json:"ruleJson"`
+	Enabled  bool   `json:"enabled"`
+}
+
+type configHashRateLimit struct {
+	Email      string `json:"email"`
+	EgressBps  int64  `json:"egressBps"`
+	IngressBps int64  `json:"ingressBps"`
+}
+
 // GetSeqInfo returns {seq, hash} for the lightweight polling endpoint.
 func (s *ConfigSeqService) GetSeqInfo() (*SeqInfo, error) {
 	db := database.GetDB()
@@ -58,7 +91,8 @@ func (s *ConfigSeqService) BumpSeq() (int64, error) {
 func (s *ConfigSeqService) UpdateHash() error {
 	db := database.GetDB()
 
-	// Gather all state that defines this node's configuration
+	// Gather only stable configuration state. Dynamic traffic counters must not
+	// participate in the hash, otherwise normal usage causes perpetual drift.
 	var inbounds []model.Inbound
 	db.Order("id").Find(&inbounds)
 
@@ -78,14 +112,59 @@ func (s *ConfigSeqService) UpdateHash() error {
 		nodeMeta[row.Key] = row.Value
 	}
 
-	// Build a deterministic hash input
+	hashInbounds := make([]configHashInbound, 0, len(inbounds))
+	for _, inbound := range inbounds {
+		hashInbounds = append(hashInbounds, configHashInbound{
+			Remark:         inbound.Remark,
+			Enable:         inbound.Enable,
+			ExpiryTime:     inbound.ExpiryTime,
+			Listen:         inbound.Listen,
+			Port:           inbound.Port,
+			Protocol:       inbound.Protocol,
+			Settings:       inbound.Settings,
+			StreamSettings: inbound.StreamSettings,
+			Tag:            inbound.Tag,
+			Sniffing:       inbound.Sniffing,
+		})
+	}
+
+	hashOutbounds := make([]configHashOutbound, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		hashOutbounds = append(hashOutbounds, configHashOutbound{
+			Tag:         outbound.Tag,
+			Protocol:    outbound.Protocol,
+			Settings:    outbound.Settings,
+			SendThrough: outbound.SendThrough,
+			Enabled:     outbound.Enabled,
+		})
+	}
+
+	hashRoutes := make([]configHashRoute, 0, len(routes))
+	for _, route := range routes {
+		hashRoutes = append(hashRoutes, configHashRoute{
+			Priority: route.Priority,
+			RuleJson: route.RuleJson,
+			Enabled:  route.Enabled,
+		})
+	}
+
+	hashRateLimits := make([]configHashRateLimit, 0, len(rateLimits))
+	for _, rateLimit := range rateLimits {
+		hashRateLimits = append(hashRateLimits, configHashRateLimit{
+			Email:      rateLimit.Email,
+			EgressBps:  rateLimit.EgressBps,
+			IngressBps: rateLimit.IngressBps,
+		})
+	}
+
+	// Build a deterministic hash input.
 	state := struct {
-		Inbounds   []model.Inbound         `json:"i"`
-		Outbounds  []model.Outbound        `json:"o"`
-		Routes     []model.RoutingRule     `json:"r"`
-		RateLimits []model.ClientRateLimit `json:"l"`
-		NodeMeta   map[string]string       `json:"m"`
-	}{inbounds, outbounds, routes, rateLimits, nodeMeta}
+		Inbounds   []configHashInbound   `json:"i"`
+		Outbounds  []configHashOutbound  `json:"o"`
+		Routes     []configHashRoute     `json:"r"`
+		RateLimits []configHashRateLimit `json:"l"`
+		NodeMeta   map[string]string     `json:"m"`
+	}{hashInbounds, hashOutbounds, hashRoutes, hashRateLimits, nodeMeta}
 
 	data, err := json.Marshal(state)
 	if err != nil {

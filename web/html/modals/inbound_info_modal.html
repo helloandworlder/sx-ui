@@ -644,13 +644,20 @@
     subJsonLink: '',
     clientIps: '',
     clientIpsArray: [],
+    getInboundClients() {
+      if ([Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(this.inbound.protocol)) {
+        return this.inbound.settings && this.inbound.settings.accounts ? this.inbound.settings.accounts : null;
+      }
+      return this.inbound.clients ? this.inbound.clients : null;
+    },
     show(dbInbound, index) {
       this.index = index;
       this.inbound = dbInbound.toInbound();
       this.dbInbound = new DBInbound(dbInbound);
-      this.clientSettings = this.inbound.clients ? this.inbound.clients[index] : null;
+      const clients = this.getInboundClients();
+      this.clientSettings = clients ? clients[index] : null;
       this.isExpired = this.inbound.clients ? this.inbound.isExpiry(index) : this.dbInbound.isExpiry;
-      this.clientStats = this.inbound.clients ? (this.dbInbound.clientStats.find(row => row.email === this.clientSettings.email) || null) : null;
+      this.clientStats = this.clientSettings ? (this.dbInbound.clientStats.find(row => row.email === this.clientSettings.email) || null) : null;
 
       if (
         [
@@ -660,7 +667,7 @@
           Protocols.SHADOWSOCKS
         ].includes(this.inbound.protocol)
       ) {
-        if (app.ipLimitEnable && this.clientSettings.limitIp) {
+        if (app.ipLimitEnable && this.clientSettings && this.clientSettings.limitIp) {
           refreshIPs(this.clientStats.email).then((result) => {
             this.clientIps = result.text;
             this.clientIpsArray = result.array;

@@ -40,6 +40,12 @@ type XrayAPI struct {
 	isConnected            bool
 }
 
+const handlerRPCTimeout = 5 * time.Second
+
+func handlerContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), handlerRPCTimeout)
+}
+
 // Init connects to the Xray API server and initializes handler and stats service clients.
 func (x *XrayAPI) Init(apiPort int) error {
 	if apiPort <= 0 || apiPort > math.MaxUint16 {
@@ -141,7 +147,10 @@ func (x *XrayAPI) AddInbound(inbound []byte) error {
 	}
 	inboundConfig := command.AddInboundRequest{Inbound: config}
 
-	_, err = client.AddInbound(context.Background(), &inboundConfig)
+	ctx, cancel := handlerContext()
+	defer cancel()
+
+	_, err = client.AddInbound(ctx, &inboundConfig)
 
 	return err
 }
@@ -149,7 +158,10 @@ func (x *XrayAPI) AddInbound(inbound []byte) error {
 // DelInbound removes an inbound configuration from the Xray core by tag.
 func (x *XrayAPI) DelInbound(tag string) error {
 	client := *x.HandlerServiceClient
-	_, err := client.RemoveInbound(context.Background(), &command.RemoveInboundRequest{
+	ctx, cancel := handlerContext()
+	defer cancel()
+
+	_, err := client.RemoveInbound(ctx, &command.RemoveInboundRequest{
 		Tag: tag,
 	})
 	return err
@@ -226,8 +238,10 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 	}
 
 	client := *x.HandlerServiceClient
+	ctx, cancel := handlerContext()
+	defer cancel()
 
-	_, err := client.AlterInbound(context.Background(), &command.AlterInboundRequest{
+	_, err := client.AlterInbound(ctx, &command.AlterInboundRequest{
 		Tag: inboundTag,
 		Operation: serial.ToTypedMessage(&command.AddUserOperation{
 			User: &protocol.User{
