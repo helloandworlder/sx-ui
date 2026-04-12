@@ -36,18 +36,31 @@ jobs:
           export CC=${{ matrix.goarch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
           CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath -ldflags="-s -w" \
-            -o sx-ui-${{ matrix.goos }}-${{ matrix.goarch }} main.go
+            -o build/x-ui main.go
+
+      - name: Prepare runtime bundle
+        run: |
+          ./DockerInit.sh "${{ matrix.goarch }}"
+          rm -rf dist
+          mkdir -p dist/sx-ui/bin
+          cp build/x-ui dist/sx-ui/x-ui
+          cp x-ui.sh dist/sx-ui/x-ui.sh
+          cp README.md LICENSE dist/sx-ui/
+          cp -R build/bin/. dist/sx-ui/bin/
+          chmod +x dist/sx-ui/x-ui dist/sx-ui/x-ui.sh
+          find dist/sx-ui/bin -type f -exec chmod +x {} \;
+          tar -C dist -czf sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz sx-ui
 
       - name: Generate sha256 checksum
         run: |
-          sha256sum sx-ui-${{ matrix.goos }}-${{ matrix.goarch }} \
+          sha256sum sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz \
             > sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}
+            sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
             sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
   docker:
@@ -107,6 +120,14 @@ jobs:
             artifacts/sx-ui-linux-amd64/*
             artifacts/sx-ui-linux-arm64/*
           body: |
+            ## Install
+
+            ```bash
+            GITHUB_OWNER=${{ github.repository_owner }} \
+            GITHUB_REPO=${{ github.event.repository.name }} \
+            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/main/install.sh)
+            ```
+
             ## Docker Image
 
             ```bash
