@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"time"
 
 	"github.com/helloandworlder/sx-ui/v2/logger"
 	"github.com/helloandworlder/sx-ui/v2/util/common"
 
+	reverseCommand "github.com/xtls/xray-core/app/reverse/command"
+	reverseconf "github.com/xtls/xray-core/app/reverse"
 	"github.com/xtls/xray-core/app/proxyman/command"
 	rateLimitCommand "github.com/xtls/xray-core/app/ratelimit/command"
 	routerCommand "github.com/xtls/xray-core/app/router/command"
@@ -23,6 +26,9 @@ import (
 	"github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
 	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
+	xrayhttp "github.com/xtls/xray-core/proxy/http"
+	hysteriaAccount "github.com/xtls/xray-core/proxy/hysteria/account"
+	xraysocks "github.com/xtls/xray-core/proxy/socks"
 	"github.com/xtls/xray-core/proxy/trojan"
 	"github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vmess"
@@ -33,6 +39,7 @@ import (
 // XrayAPI is a gRPC client for managing Xray core configuration, inbounds, outbounds, and statistics.
 type XrayAPI struct {
 	HandlerServiceClient   *command.HandlerServiceClient
+	ReverseServiceClient   *reverseCommand.ReverseServiceClient
 	RateLimitServiceClient *rateLimitCommand.RateLimitServiceClient
 	StatsServiceClient     *statsService.StatsServiceClient
 	RoutingServiceClient   *routerCommand.RoutingServiceClient
@@ -62,11 +69,13 @@ func (x *XrayAPI) Init(apiPort int) error {
 	x.isConnected = true
 
 	hsClient := command.NewHandlerServiceClient(conn)
+	rvClient := reverseCommand.NewReverseServiceClient(conn)
 	rlClient := rateLimitCommand.NewRateLimitServiceClient(conn)
 	ssClient := statsService.NewStatsServiceClient(conn)
 	rsClient := routerCommand.NewRoutingServiceClient(conn)
 
 	x.HandlerServiceClient = &hsClient
+	x.ReverseServiceClient = &rvClient
 	x.RateLimitServiceClient = &rlClient
 	x.StatsServiceClient = &ssClient
 	x.RoutingServiceClient = &rsClient
@@ -80,6 +89,7 @@ func (x *XrayAPI) Close() {
 		x.grpcClient.Close()
 	}
 	x.HandlerServiceClient = nil
+	x.ReverseServiceClient = nil
 	x.RateLimitServiceClient = nil
 	x.StatsServiceClient = nil
 	x.RoutingServiceClient = nil
@@ -233,8 +243,22 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 				Email: user["email"].(string),
 			})
 		}
+	case "http":
+		account = serial.ToTypedMessage(&xrayhttp.Account{
+			Username: user["user"].(string),
+			Password: user["password"].(string),
+		})
+	case "socks", "mixed":
+		account = serial.ToTypedMessage(&xraysocks.Account{
+			Username: user["user"].(string),
+			Password: user["password"].(string),
+		})
+	case "hysteria", "hysteria2", "hy2":
+		account = serial.ToTypedMessage(&hysteriaAccount.Account{
+			Auth: user["password"].(string),
+		})
 	default:
-		return nil
+		return fmt.Errorf("unsupported protocol for AddUser: %s", Protocol)
 	}
 
 	client := *x.HandlerServiceClient
@@ -392,6 +416,64 @@ func (x *XrayAPI) DelOutbound(tag string) error {
 	return err
 }
 
+func (x *XrayAPI) ListOutbounds() ([]string, error) {
+	if x.HandlerServiceClient == nil {
+		return nil, fmt.Errorf("handler service client not initialized")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := (*x.HandlerServiceClient).ListOutbounds(ctx, &command.ListOutboundsRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	tags := make([]string, 0, len(resp.Outbounds))
+	for _, outbound := range resp.Outbounds {
+		if tag := outbound.GetTag(); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	sort.Strings(tags)
+	return tags, nil
+}
+
+func (x *XrayAPI) ReplaceOutbounds(outboundsJSON []byte, preserveTags ...string) error {
+	var items []json.RawMessage
+	if err := json.Unmarshal(outboundsJSON, &items); err != nil {
+		return fmt.Errorf("unmarshal outbounds: %w", err)
+	}
+
+	preserve := map[string]bool{"api": true}
+	for _, tag := range preserveTags {
+		if tag != "" {
+			preserve[tag] = true
+		}
+	}
+
+	currentTags, err := x.ListOutbounds()
+	if err != nil {
+		return err
+	}
+	for _, tag := range currentTags {
+		if preserve[tag] {
+			continue
+		}
+		if err := x.DelOutbound(tag); err != nil {
+			return err
+		}
+	}
+
+	for _, raw := range items {
+		if err := x.AddOutbound(raw); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // AddRoutingRule adds a routing rule to running Xray via gRPC.
 // ruleJSON should be a Xray routing rule JSON ({"type":"field","outboundTag":"...", ...}).
 // The JSON is parsed via the conf package's internal parseFieldRule.
@@ -412,16 +494,39 @@ func (x *XrayAPI) AddRoutingRule(ruleJSON []byte, shouldAppend bool) error {
 	if err != nil {
 		return fmt.Errorf("build router config: %w", err)
 	}
-	if len(routerConfig.Rule) == 0 {
-		return fmt.Errorf("no rules built from JSON")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err = (*x.RoutingServiceClient).AddRule(ctx, &routerCommand.AddRuleRequest{
-		Config:       serial.ToTypedMessage(routerConfig.Rule[0]),
+		Config:       serial.ToTypedMessage(routerConfig),
 		ShouldAppend: shouldAppend,
+	})
+	return err
+}
+
+func (x *XrayAPI) ReplaceRoutingConfig(routingJSON []byte) error {
+	if x.RoutingServiceClient == nil {
+		return fmt.Errorf("routing service client not initialized")
+	}
+
+	routerConf := new(conf.RouterConfig)
+	if len(routingJSON) == 0 {
+		routingJSON = []byte(`{}`)
+	}
+	if err := json.Unmarshal(routingJSON, routerConf); err != nil {
+		return fmt.Errorf("unmarshal router config: %w", err)
+	}
+	routerConfig, err := routerConf.Build()
+	if err != nil {
+		return fmt.Errorf("build router config: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = (*x.RoutingServiceClient).AddRule(ctx, &routerCommand.AddRuleRequest{
+		Config:       serial.ToTypedMessage(routerConfig),
+		ShouldAppend: false,
 	})
 	return err
 }
@@ -436,5 +541,30 @@ func (x *XrayAPI) DelRoutingRule(ruleTag string) error {
 	defer cancel()
 
 	_, err := (*x.RoutingServiceClient).RemoveRule(ctx, &routerCommand.RemoveRuleRequest{RuleTag: ruleTag})
+	return err
+}
+
+func (x *XrayAPI) ReplaceReverseConfig(reverseJSON []byte) error {
+	if x.ReverseServiceClient == nil {
+		return fmt.Errorf("reverse service client not initialized")
+	}
+
+	reverseConf := new(conf.ReverseConfig)
+	if len(reverseJSON) == 0 {
+		reverseJSON = []byte(`{}`)
+	}
+	if err := json.Unmarshal(reverseJSON, reverseConf); err != nil {
+		return fmt.Errorf("unmarshal reverse config: %w", err)
+	}
+	config, err := reverseConf.Build()
+	if err != nil {
+		return fmt.Errorf("build reverse config: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = (*x.ReverseServiceClient).ReplaceConfig(ctx, &reverseCommand.ReplaceConfigRequest{
+		Config: config.(*reverseconf.Config),
+	})
 	return err
 }

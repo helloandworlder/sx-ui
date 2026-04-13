@@ -42,7 +42,7 @@
         </template>
         <a-input v-model.trim="client.pass"></a-input>
     </a-form-item>
-    <a-form-item v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS">
+    <a-form-item v-if="inbound.protocol === Protocols.TROJAN || inbound.protocol === Protocols.SHADOWSOCKS || inbound.protocol === Protocols.HYSTERIA">
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
@@ -51,6 +51,7 @@
                 {{ i18n "password" }}
                 <a-icon v-if="inbound.protocol === Protocols.SHADOWSOCKS" @click="client.password = RandomUtil.randomShadowsocksPassword(inbound.settings.method)" type="sync"></a-icon>
                 <a-icon v-if="inbound.protocol === Protocols.TROJAN" @click="client.password = RandomUtil.randomSeq(10)"type="sync"> </a-icon>
+                <a-icon v-if="inbound.protocol === Protocols.HYSTERIA" @click="client.password = RandomUtil.randomSeq(24)" type="sync"></a-icon>
             </a-tooltip>
         </template>
         <a-input v-model.trim="client.password"></a-input>
@@ -71,7 +72,7 @@
             <a-select-option v-for="key in USERS_SECURITY" :value="key">[[ key ]]</a-select-option>
         </a-select>
     </a-form-item>
-    <a-form-item v-if="client.email && app.subSettings?.enable && ![Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(inbound.protocol)">
+    <a-form-item v-if="client.email">
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
@@ -98,11 +99,31 @@
     <a-form-item v-if="client.email" label='{{ i18n "comment" }}'>
         <a-input v-model.trim="client.comment"></a-input>
     </a-form-item>
-    <a-form-item label="Upload Limit (B/s)">
-        <a-input-number v-model.number="client.egressBps" :min="0" :style="{ width: '100%' }"></a-input-number>
+    <a-form-item label="Upload Limit">
+        <a-input-group compact>
+            <a-input-number
+                v-model.number="client.egressRateValue"
+                :min="0"
+                :step="0.01"
+                :precision="3"
+                :style="{ width: '70%' }"></a-input-number>
+            <a-select v-model="client.egressRateUnit" :dropdown-class-name="themeSwitcher.currentTheme" :style="{ width: '30%' }">
+                <a-select-option v-for="unit in RateLimitUtil.UNITS" :key="unit.value" :value="unit.value">[[ unit.label ]]</a-select-option>
+            </a-select>
+        </a-input-group>
     </a-form-item>
-    <a-form-item label="Download Limit (B/s)">
-        <a-input-number v-model.number="client.ingressBps" :min="0" :style="{ width: '100%' }"></a-input-number>
+    <a-form-item label="Download Limit">
+        <a-input-group compact>
+            <a-input-number
+                v-model.number="client.ingressRateValue"
+                :min="0"
+                :step="0.01"
+                :precision="3"
+                :style="{ width: '70%' }"></a-input-number>
+            <a-select v-model="client.ingressRateUnit" :dropdown-class-name="themeSwitcher.currentTheme" :style="{ width: '30%' }">
+                <a-select-option v-for="unit in RateLimitUtil.UNITS" :key="unit.value" :value="unit.value">[[ unit.label ]]</a-select-option>
+            </a-select>
+        </a-input-group>
     </a-form-item>
     <a-form-item v-if="app.ipLimitEnable && ![Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(inbound.protocol)">
         <template slot="label">

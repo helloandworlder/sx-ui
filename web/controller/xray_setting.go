@@ -2,7 +2,9 @@ package controller
 
 import (
 	"encoding/json"
+	"strings"
 
+	"github.com/helloandworlder/sx-ui/v2/xray"
 	"github.com/helloandworlder/sx-ui/v2/util/common"
 	"github.com/helloandworlder/sx-ui/v2/web/service"
 
@@ -16,6 +18,7 @@ type XraySettingController struct {
 	InboundService     service.InboundService
 	OutboundService    service.OutboundService
 	XrayService        service.XrayService
+	XrayDynamicService service.XrayDynamicService
 	WarpService        service.WarpService
 }
 
@@ -36,6 +39,7 @@ func (a *XraySettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/", a.getXraySetting)
 	g.POST("/warp/:action", a.warp)
 	g.POST("/update", a.updateSetting)
+	g.POST("/runtimeApply", a.runtimeApply)
 	g.POST("/resetOutboundsTraffic", a.resetOutboundsTraffic)
 	g.POST("/testOutbound", a.testOutbound)
 }
@@ -81,7 +85,84 @@ func (a *XraySettingController) updateSetting(c *gin.Context) {
 		outboundTestUrl = "https://www.google.com/generate_204"
 	}
 	_ = a.SettingService.SetXrayOutboundTestUrl(outboundTestUrl)
+	if err := a.XrayService.RestartXray(false); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+		return
+	}
 	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), nil)
+}
+
+func hasRuntimeSection(sections []string, wanted string) bool {
+	for _, section := range sections {
+		if strings.EqualFold(strings.TrimSpace(section), wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractPortalTags(reverseJSON []byte) []string {
+	if len(reverseJSON) == 0 {
+		return nil
+	}
+	var payload struct {
+		Portals []struct {
+			Tag string `json:"tag"`
+		} `json:"portals"`
+	}
+	if err := json.Unmarshal(reverseJSON, &payload); err != nil {
+		return nil
+	}
+	tags := make([]string, 0, len(payload.Portals))
+	for _, portal := range payload.Portals {
+		if portal.Tag != "" {
+			tags = append(tags, portal.Tag)
+		}
+	}
+	return tags
+}
+
+func (a *XraySettingController) runtimeApply(c *gin.Context) {
+	xraySetting := c.PostForm("xraySetting")
+	if xraySetting == "" {
+		xraySetting = c.GetString("xraySetting")
+	}
+	if xraySetting == "" {
+		var body struct {
+			XraySetting     string   `json:"xraySetting"`
+			OutboundTestURL string   `json:"outboundTestUrl"`
+			Sections        []string `json:"sections"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+			return
+		}
+		xraySetting = body.XraySetting
+		if err := a.XraySettingService.SaveXraySetting(xraySetting); err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+			return
+		}
+		if body.OutboundTestURL != "" {
+			_ = a.SettingService.SetXrayOutboundTestUrl(body.OutboundTestURL)
+		}
+		var cfg xray.Config
+		if err := json.Unmarshal([]byte(xraySetting), &cfg); err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+			return
+		}
+		if hasRuntimeSection(body.Sections, "outbounds") {
+			a.XrayDynamicService.DynamicReplaceOutbounds(string(cfg.OutboundConfigs), extractPortalTags(cfg.Reverse)...)
+		}
+		if hasRuntimeSection(body.Sections, "routing") {
+			a.XrayDynamicService.DynamicReplaceRouting(string(cfg.RouterConfig))
+		}
+		if hasRuntimeSection(body.Sections, "reverse") {
+			a.XrayDynamicService.DynamicReplaceReverse(string(cfg.Reverse))
+		}
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), nil)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), common.NewError("xraySetting is required"))
 }
 
 // getDefaultXrayConfig retrieves the default Xray configuration.

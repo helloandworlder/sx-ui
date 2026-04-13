@@ -653,6 +653,48 @@ class NumberFormatter {
     }
 }
 
+class RateLimitUtil {
+    static UNITS = [
+        { value: 'B/s', factor: 1, label: 'B/s' },
+        { value: 'Kbps', factor: 125, label: 'Kbps' },
+        { value: 'Mbps', factor: 125000, label: 'Mbps' },
+        { value: 'Gbps', factor: 125000000, label: 'Gbps' },
+    ];
+
+    static getUnit(unit) {
+        return this.UNITS.find((item) => item.value === unit) ?? this.UNITS[2];
+    }
+
+    static toBps(value, unit = 'Mbps') {
+        const numeric = Number.parseFloat(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) {
+            return 0;
+        }
+        return Math.round(numeric * this.getUnit(unit).factor);
+    }
+
+    static fromBps(bps) {
+        const numeric = Number.parseInt(bps ?? 0, 10);
+        if (!Number.isFinite(numeric) || numeric <= 0) {
+            return { value: 0, unit: 'Mbps' };
+        }
+        const candidates = [...this.UNITS].reverse().filter((item) => item.factor <= numeric);
+        const unit = candidates[0] ?? this.UNITS[0];
+        return {
+            value: NumberFormatter.toFixed(numeric / unit.factor, 3),
+            unit: unit.value,
+        };
+    }
+
+    static formatBps(bps) {
+        const result = this.fromBps(bps);
+        if (!result.value) {
+            return '0';
+        }
+        return `${result.value} ${result.unit}`;
+    }
+}
+
 class Utils {
     static debounce(fn, delay) {
         let timeoutID = null;

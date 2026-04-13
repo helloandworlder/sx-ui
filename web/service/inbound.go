@@ -111,6 +111,7 @@ func normalizeSettingsClients(protocol model.Protocol, settings map[string]any) 
 				"comment":    strings.TrimSpace(fmt.Sprint(account["comment"])),
 				"egressBps":  asInt64(account["egressBps"]),
 				"ingressBps": asInt64(account["ingressBps"]),
+				"subId":      strings.TrimSpace(fmt.Sprint(account["subId"])),
 				"created_at": asInt64(account["created_at"]),
 				"updated_at": asInt64(account["updated_at"]),
 			})
@@ -263,6 +264,13 @@ func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, err
 	var clients []model.Client
 	if err := json.Unmarshal(encoded, &clients); err != nil {
 		return nil, err
+	}
+	if inbound.Protocol == model.Hysteria {
+		for i := range clients {
+			if clients[i].Password == "" && clients[i].Auth != "" {
+				clients[i].Password = clients[i].Auth
+			}
+		}
 	}
 	return clients, nil
 }
@@ -505,8 +513,16 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	// Secure client ID
 	for _, client := range clients {
 		switch inbound.Protocol {
+		case "http", "socks", "mixed":
+			if client.Email == "" {
+				return inbound, false, common.NewError("empty client ID")
+			}
 		case "trojan":
 			if client.Password == "" {
+				return inbound, false, common.NewError("empty client ID")
+			}
+		case "hysteria":
+			if client.Password == "" && client.Auth == "" {
 				return inbound, false, common.NewError("empty client ID")
 			}
 		case "shadowsocks":
@@ -867,8 +883,16 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	// Secure client ID
 	for _, client := range clients {
 		switch oldInbound.Protocol {
+		case "http", "socks", "mixed":
+			if client.Email == "" {
+				return false, common.NewError("empty client ID")
+			}
 		case "trojan":
 			if client.Password == "" {
+				return false, common.NewError("empty client ID")
+			}
+		case "hysteria":
+			if client.Password == "" && client.Auth == "" {
 				return false, common.NewError("empty client ID")
 			}
 		case "shadowsocks":
@@ -1084,6 +1108,9 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		oldClientId := ""
 		switch oldInbound.Protocol {
 		case "trojan":
+			oldClientId = oldClient.Password
+			newClientId = clients[0].Password
+		case "hysteria":
 			oldClientId = oldClient.Password
 			newClientId = clients[0].Password
 		case "shadowsocks":

@@ -75,27 +75,136 @@ os_version=""
 os_version=$(grep "^VERSION_ID" /etc/os-release | cut -d '=' -f2 | tr -d '"' | tr -d '.')
 
 # Declare Variables
-xui_instance="${XUI_INSTANCE:=main}"
-xui_root_folder="${XUI_ROOT_FOLDER:=/usr/local/sx-ui}"
-xui_folder="${XUI_MAIN_FOLDER:=${xui_root_folder}/${xui_instance}}"
-xui_service="${XUI_SERVICE:=/etc/systemd/system}"
-log_folder="${XUI_LOG_FOLDER:=/var/log/x-ui/${xui_instance}}"
-xui_service_name="${XUI_SERVICE_NAME:=x-ui-${xui_instance}}"
-export XUI_INSTANCE="${xui_instance}"
-export XUI_DB_FOLDER="${XUI_DB_FOLDER:=/etc/x-ui/${xui_instance}}"
-export XUI_LOG_FOLDER="${log_folder}"
-export XUI_BIN_FOLDER="${xui_folder}/bin"
-mkdir -p "${log_folder}"
-iplimit_log_path="${log_folder}/3xipl.log"
-iplimit_banned_log_path="${log_folder}/3xipl-banned.log"
+if [[ "$1" == "--instance" || "$1" == "-i" ]]; then
+    export XUI_INSTANCE="$2"
+    shift 2
+fi
+
+initial_xui_instance="${XUI_INSTANCE:-}"
+xui_instance="${XUI_INSTANCE:-}"
+xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
+xui_service="${XUI_SERVICE:-/etc/systemd/system}"
+instance_hub_mode=false
+
+sanitize_instance_name() {
+    local value="$1"
+    [[ "${value}" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+ask_instance_name() {
+    local default_instance="${1:-main}"
+    local input="${default_instance}"
+    while true; do
+        read -rp "SX-UI instance name [${default_instance}]: " input
+        input="${input:-${default_instance}}"
+        if sanitize_instance_name "${input}"; then
+            echo "${input}"
+            return 0
+        fi
+        echo -e "${yellow}Instance name may only contain letters, numbers, dot, underscore, and dash.${plain}"
+    done
+}
+
+discover_instances() {
+    find "${xui_service}" -maxdepth 1 -type f -name 'sx-ui-*.service' 2>/dev/null \
+        | sed -E 's#^.*/sx-ui-##; s#\.service$##' \
+        | sort -u
+}
+
+prompt_instance_name() {
+    if [[ -n "${xui_instance}" ]]; then
+        return
+    fi
+
+    xui_instance="main"
+}
+
+apply_instance_paths() {
+    xui_folder="${XUI_MAIN_FOLDER:-${xui_root_folder}/${xui_instance}}"
+    log_folder="${XUI_LOG_FOLDER:-/var/log/sx-ui/${xui_instance}}"
+    xui_service_name="${XUI_SERVICE_NAME:-sx-ui-${xui_instance}}"
+    export XUI_INSTANCE="${xui_instance}"
+    export XUI_DB_FOLDER="${XUI_DB_FOLDER:-/etc/sx-ui/${xui_instance}}"
+    export XUI_LOG_FOLDER="${log_folder}"
+    export XUI_BIN_FOLDER="${xui_folder}/bin"
+    mkdir -p "${log_folder}"
+    iplimit_log_path="${log_folder}/3xipl.log"
+    iplimit_banned_log_path="${log_folder}/3xipl-banned.log"
+}
+
+prompt_instance_name
+apply_instance_paths
+
+select_instance() {
+    xui_instance="$1"
+    apply_instance_paths
+}
+
+get_instance_status_label() {
+    local instance="$1"
+    local service_name="sx-ui-${instance}"
+    if [[ $release == "alpine" ]]; then
+        if [[ -f "/etc/init.d/${service_name}" ]] && rc-service "${service_name}" status 2>/dev/null | grep -Fq 'status: started'; then
+            echo "running"
+            return
+        fi
+        echo "stopped"
+        return
+    fi
+    if [[ ! -f "${xui_service}/${service_name}.service" ]]; then
+        echo "not installed"
+        return
+    fi
+    systemctl is-active "${service_name}" 2>/dev/null || echo "inactive"
+}
+
+show_instance_hub() {
+    instance_hub_mode=true
+    while true; do
+        mapfile -t instances < <(discover_instances)
+        echo -e "\n╔────────────────────────────────────────────────╗"
+        echo -e "│   ${green}SX-UI Instance Hub${plain}                          │"
+        echo -e "│   ${green}0.${plain} Exit                                      │"
+        echo -e "│   ${green}1.${plain} Install New Instance                      │"
+        local idx=2
+        if [[ ${#instances[@]} -eq 0 ]]; then
+            echo -e "│   ${yellow}No installed sx-ui instances found${plain}             │"
+        else
+            for instance in "${instances[@]}"; do
+                status="$(get_instance_status_label "${instance}")"
+                printf "│  %2d. Manage %-18s [%s]\n" "${idx}" "${instance}" "${status}"
+                idx=$((idx + 1))
+            done
+        fi
+        echo -e "╚────────────────────────────────────────────────╝"
+        read -rp "Choose an option [0-${idx}]: " choice
+        if [[ "${choice}" == "0" ]]; then
+            exit 0
+        fi
+        if [[ "${choice}" == "1" ]]; then
+            local new_instance
+            new_instance="$(ask_instance_name "main")"
+            select_instance "${new_instance}"
+            install
+            return
+        fi
+        if [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 2 && choice < idx )); then
+            local selected_instance="${instances[$((choice - 2))]}"
+            select_instance "${selected_instance}"
+            show_menu
+            return
+        fi
+        LOGE "Please enter a valid option."
+    done
+}
 
 resolve_service_name() {
     if [[ -f "${xui_service}/${xui_service_name}.service" ]]; then
         echo "${xui_service_name}"
         return
     fi
-    if [[ -f "${xui_service}/x-ui.service" ]]; then
-        echo "x-ui"
+    if [[ -f "${xui_service}/x-ui-${xui_instance}.service" ]]; then
+        echo "x-ui-${xui_instance}"
         return
     fi
     echo "${xui_service_name}"
@@ -143,7 +252,7 @@ install() {
 }
 
 update() {
-    confirm "This function will update all x-ui components to the latest version, and the data will not be lost. Do you want to continue?" "y"
+    confirm "This function will update all sx-ui components to the latest version, and the data will not be lost. Do you want to continue?" "y"
     if [[ $? != 0 ]]; then
         LOGE "Cancelled"
         if [[ $# == 0 ]]; then
@@ -169,9 +278,9 @@ update_menu() {
         return 0
     fi
 
-    curl -fLRo /usr/bin/x-ui ${GITHUB_RAW_BASE}/x-ui.sh
+    curl -fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh
     chmod +x ${xui_folder}/x-ui.sh
-    chmod +x /usr/bin/x-ui
+    chmod +x /usr/bin/sx-ui
 
     if [[ $? == 0 ]]; then
         echo -e "${green}Update successful. The panel has automatically restarted.${plain}"
@@ -213,9 +322,9 @@ uninstall() {
     fi
 
     if [[ $release == "alpine" ]]; then
-        rc-service x-ui stop
-        rc-update del x-ui
-        rm /etc/init.d/x-ui -f
+        rc-service "${xui_service_name}" stop
+        rc-update del "${xui_service_name}"
+        rm "/etc/init.d/${xui_service_name}" -f
     else
         local service_name
         service_name=$(resolve_service_name)
@@ -226,9 +335,9 @@ uninstall() {
         systemctl reset-failed
     fi
 
-    rm "/etc/x-ui/${xui_instance}/" -rf
+    rm "/etc/sx-ui/${xui_instance}/" -rf
     rm "${xui_folder}/" -rf
-    rm "/etc/default/x-ui-${xui_instance}" -f
+    rm "/etc/default/sx-ui-${xui_instance}" -f
 
     echo ""
     echo -e "Uninstalled Successfully.\n"
@@ -374,14 +483,14 @@ start() {
         LOGI "Panel is running, No need to start again, If you need to restart, please select restart"
     else
         if [[ $release == "alpine" ]]; then
-            rc-service x-ui start
+            rc-service "${xui_service_name}" start
         else
             systemctl start "$(resolve_service_name)"
         fi
         sleep 2
         check_status
         if [[ $? == 0 ]]; then
-            LOGI "x-ui Started Successfully"
+            LOGI "sx-ui Started Successfully"
         else
             LOGE "panel Failed to start, Probably because it takes longer than two seconds to start, Please check the log information later"
         fi
@@ -399,14 +508,14 @@ stop() {
         LOGI "Panel stopped, No need to stop again!"
     else
         if [[ $release == "alpine" ]]; then
-            rc-service x-ui stop
+            rc-service "${xui_service_name}" stop
         else
             systemctl stop "$(resolve_service_name)"
         fi
         sleep 2
         check_status
         if [[ $? == 1 ]]; then
-            LOGI "x-ui and xray stopped successfully"
+            LOGI "sx-ui and xray stopped successfully"
         else
             LOGE "Panel stop failed, Probably because the stop time exceeds two seconds, Please check the log information later"
         fi
@@ -419,14 +528,14 @@ stop() {
 
 restart() {
     if [[ $release == "alpine" ]]; then
-        rc-service x-ui restart
+        rc-service "${xui_service_name}" restart
     else
         systemctl restart "$(resolve_service_name)"
     fi
     sleep 2
     check_status
     if [[ $? == 0 ]]; then
-        LOGI "x-ui and xray Restarted successfully"
+        LOGI "sx-ui and xray Restarted successfully"
     else
         LOGE "Panel restart failed, Probably because it takes longer than two seconds to start, Please check the log information later"
     fi
@@ -447,7 +556,7 @@ restart_xray() {
 
 status() {
     if [[ $release == "alpine" ]]; then
-        rc-service x-ui status
+        rc-service "${xui_service_name}" status
     else
         systemctl status "$(resolve_service_name)" -l
     fi
@@ -458,14 +567,14 @@ status() {
 
 enable() {
     if [[ $release == "alpine" ]]; then
-        rc-update add x-ui default
+        rc-update add "${xui_service_name}" default
     else
         systemctl enable "$(resolve_service_name)"
     fi
     if [[ $? == 0 ]]; then
-        LOGI "x-ui Set to boot automatically on startup successfully"
+        LOGI "sx-ui set to boot automatically on startup successfully"
     else
-        LOGE "x-ui Failed to set Autostart"
+        LOGE "sx-ui failed to set autostart"
     fi
 
     if [[ $# == 0 ]]; then
@@ -475,14 +584,14 @@ enable() {
 
 disable() {
     if [[ $release == "alpine" ]]; then
-        rc-update del x-ui
+        rc-update del "${xui_service_name}"
     else
         systemctl disable "$(resolve_service_name)"
     fi
     if [[ $? == 0 ]]; then
-        LOGI "x-ui Autostart Cancelled successfully"
+        LOGI "sx-ui autostart cancelled successfully"
     else
-        LOGE "x-ui Failed to cancel autostart"
+        LOGE "sx-ui failed to cancel autostart"
     fi
 
     if [[ $# == 0 ]]; then
@@ -630,13 +739,13 @@ enable_bbr() {
 }
 
 update_shell() {
-    curl -fLRo /usr/bin/x-ui -z /usr/bin/x-ui ${GITHUB_RAW_BASE}/x-ui.sh
+    curl -fLRo /usr/bin/sx-ui -z /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh
     if [[ $? != 0 ]]; then
         echo ""
         LOGE "Failed to download script, Please check whether the machine can connect Github"
         before_show_menu
     else
-        chmod +x /usr/bin/x-ui
+        chmod +x /usr/bin/sx-ui
         LOGI "Upgrade script succeeded, Please rerun the script"
         before_show_menu
     fi
@@ -645,10 +754,10 @@ update_shell() {
 # 0: running, 1: not running, 2: not installed
 check_status() {
     if [[ $release == "alpine" ]]; then
-        if [[ ! -f /etc/init.d/x-ui ]]; then
+        if [[ ! -f "/etc/init.d/${xui_service_name}" ]]; then
             return 2
         fi
-        if [[ $(rc-service x-ui status | grep -F 'status: started' -c) == 1 ]]; then
+        if [[ $(rc-service "${xui_service_name}" status | grep -F 'status: started' -c) == 1 ]]; then
             return 0
         else
             return 1
@@ -670,7 +779,7 @@ check_status() {
 
 check_enabled() {
     if [[ $release == "alpine" ]]; then
-        if [[ $(rc-update show | grep -F 'x-ui' | grep default -c) == 1 ]]; then
+        if [[ $(rc-update show | grep -F "${xui_service_name}" | grep default -c) == 1 ]]; then
             return 0
         else
             return 1
@@ -1262,7 +1371,7 @@ ssl_cert_issue_for_ip() {
     done
     
     # Reload command - restarts panel after renewal
-    local reloadCmd="systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null"
+    local reloadCmd="systemctl restart $(resolve_service_name) 2>/dev/null || rc-service ${xui_service_name} restart 2>/dev/null"
     
     # issue the certificate for IP with shortlived profile
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force
@@ -1440,24 +1549,24 @@ ssl_cert_issue() {
         LOGE "Issuing certificate succeeded, installing certificates..."
     fi
 
-    reloadCmd="x-ui restart"
+    reloadCmd="sx-ui restart"
 
-    LOGI "Default --reloadcmd for ACME is: ${yellow}x-ui restart"
+    LOGI "Default --reloadcmd for ACME is: ${yellow}sx-ui restart"
     LOGI "This command will run on every certificate issue and renew."
     read -rp "Would you like to modify --reloadcmd for ACME? (y/n): " setReloadcmd
     if [[ "$setReloadcmd" == "y" || "$setReloadcmd" == "Y" ]]; then
-        echo -e "\n${green}\t1.${plain} Preset: systemctl reload nginx ; x-ui restart"
+        echo -e "\n${green}\t1.${plain} Preset: systemctl reload nginx ; sx-ui restart"
         echo -e "${green}\t2.${plain} Input your own command"
         echo -e "${green}\t0.${plain} Keep default reloadcmd"
         read -rp "Choose an option: " choice
         case "$choice" in
         1)
-            LOGI "Reloadcmd is: systemctl reload nginx ; x-ui restart"
-            reloadCmd="systemctl reload nginx ; x-ui restart"
+            LOGI "Reloadcmd is: systemctl reload nginx ; sx-ui restart"
+            reloadCmd="systemctl reload nginx ; sx-ui restart"
             ;;
         2)  
-            LOGD "It's recommended to put x-ui restart at the end, so it won't raise an error if other services fails"
-            read -rp "Please enter your reloadcmd (example: systemctl reload nginx ; x-ui restart): " reloadCmd
+            LOGD "It's recommended to put sx-ui restart at the end, so it won't raise an error if other services fail"
+            read -rp "Please enter your reloadcmd (example: systemctl reload nginx ; sx-ui restart): " reloadCmd
             LOGI "Your reloadcmd is: ${reloadCmd}"
             ;;
         *)
@@ -1587,24 +1696,24 @@ ssl_cert_issue_CF() {
             exit 1
         fi
 
-        reloadCmd="x-ui restart"
+        reloadCmd="sx-ui restart"
 
-        LOGI "Default --reloadcmd for ACME is: ${yellow}x-ui restart"
+        LOGI "Default --reloadcmd for ACME is: ${yellow}sx-ui restart"
         LOGI "This command will run on every certificate issue and renew."
         read -rp "Would you like to modify --reloadcmd for ACME? (y/n): " setReloadcmd
         if [[ "$setReloadcmd" == "y" || "$setReloadcmd" == "Y" ]]; then
-            echo -e "\n${green}\t1.${plain} Preset: systemctl reload nginx ; x-ui restart"
+            echo -e "\n${green}\t1.${plain} Preset: systemctl reload nginx ; sx-ui restart"
             echo -e "${green}\t2.${plain} Input your own command"
             echo -e "${green}\t0.${plain} Keep default reloadcmd"
             read -rp "Choose an option: " choice
             case "$choice" in
             1)
-                LOGI "Reloadcmd is: systemctl reload nginx ; x-ui restart"
-                reloadCmd="systemctl reload nginx ; x-ui restart"
+                LOGI "Reloadcmd is: systemctl reload nginx ; sx-ui restart"
+                reloadCmd="systemctl reload nginx ; sx-ui restart"
                 ;;
             2)  
-                LOGD "It's recommended to put x-ui restart at the end, so it won't raise an error if other services fails"
-                read -rp "Please enter your reloadcmd (example: systemctl reload nginx ; x-ui restart): " reloadCmd
+                LOGD "It's recommended to put sx-ui restart at the end, so it won't raise an error if other services fail"
+                read -rp "Please enter your reloadcmd (example: systemctl reload nginx ; sx-ui restart): " reloadCmd
                 LOGI "Your reloadcmd is: ${reloadCmd}"
                 ;;
             *)
@@ -2187,31 +2296,32 @@ SSH_port_forwarding() {
 
 show_usage() {
     echo -e "┌────────────────────────────────────────────────────────────────┐
-│  ${blue}x-ui control menu usages (subcommands):${plain}                       │
+│  ${blue}sx-ui control menu usages (subcommands):${plain}                      │
 │                                                                │
-│  ${blue}x-ui${plain}                       - Admin Management Script          │
-│  ${blue}x-ui start${plain}                 - Start                            │
-│  ${blue}x-ui stop${plain}                  - Stop                             │
-│  ${blue}x-ui restart${plain}               - Restart                          │
-|  ${blue}x-ui restart-xray${plain}          - Restart Xray                     │
-│  ${blue}x-ui status${plain}                - Current Status                   │
-│  ${blue}x-ui settings${plain}              - Current Settings                 │
-│  ${blue}x-ui enable${plain}                - Enable Autostart on OS Startup   │
-│  ${blue}x-ui disable${plain}               - Disable Autostart on OS Startup  │
-│  ${blue}x-ui log${plain}                   - Check logs                       │
-│  ${blue}x-ui banlog${plain}                - Check Fail2ban ban logs          │
-│  ${blue}x-ui update${plain}                - Update                           │
-│  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
-│  ${blue}x-ui legacy${plain}                - Legacy version                   │
-│  ${blue}x-ui install${plain}               - Install                          │
-│  ${blue}x-ui uninstall${plain}             - Uninstall                        │
+│  ${blue}sx-ui${plain}                      - Admin Management Script          │
+│  ${blue}sx-ui start${plain}                - Start                            │
+│  ${blue}sx-ui stop${plain}                 - Stop                             │
+│  ${blue}sx-ui restart${plain}              - Restart                          │
+|  ${blue}sx-ui restart-xray${plain}         - Restart Xray                     │
+│  ${blue}sx-ui status${plain}               - Current Status                   │
+│  ${blue}sx-ui settings${plain}             - Current Settings                 │
+│  ${blue}sx-ui enable${plain}               - Enable Autostart on OS Startup   │
+│  ${blue}sx-ui disable${plain}              - Disable Autostart on OS Startup  │
+│  ${blue}sx-ui log${plain}                  - Check logs                       │
+│  ${blue}sx-ui banlog${plain}               - Check Fail2ban ban logs          │
+│  ${blue}sx-ui update${plain}               - Update                           │
+│  ${blue}sx-ui update-all-geofiles${plain}  - Update all geo files             │
+│  ${blue}sx-ui legacy${plain}               - Legacy version                   │
+│  ${blue}sx-ui install${plain}              - Install                          │
+│  ${blue}sx-ui uninstall${plain}            - Uninstall                        │
 └────────────────────────────────────────────────────────────────┘"
 }
 
 show_menu() {
     echo -e "
 ╔────────────────────────────────────────────────╗
-│   ${green}3X-UI Panel Management Script${plain}                │
+│   ${green}SX-UI Panel Management Script${plain}                │
+│   ${green}Instance:${plain} ${blue}${xui_instance}${plain}
 │   ${green}0.${plain} Exit Script                               │
 │────────────────────────────────────────────────│
 │   ${green}1.${plain} Install                                   │
@@ -2244,11 +2354,18 @@ show_menu() {
 │────────────────────────────────────────────────│
 │  ${green}24.${plain} Enable BBR                                │
 │  ${green}25.${plain} Update Geo Files                          │
-│  ${green}26.${plain} Speedtest by Ookla                        │
-╚────────────────────────────────────────────────╝
+│  ${green}26.${plain} Speedtest by Ookla                        │"
+    if [[ "${instance_hub_mode}" == "true" ]]; then
+        echo -e "│  ${green}27.${plain} Back to Instance Hub                      │"
+    fi
+    echo -e "╚────────────────────────────────────────────────╝
 "
     show_status
-    echo && read -rp "Please enter your selection [0-26]: " num
+    local max_option="26"
+    if [[ "${instance_hub_mode}" == "true" ]]; then
+        max_option="27"
+    fi
+    echo && read -rp "Please enter your selection [0-${max_option}]: " num
 
     case "${num}" in
     0)
@@ -2332,8 +2449,15 @@ show_menu() {
     26)
         run_speedtest
         ;;
+    27)
+        if [[ "${instance_hub_mode}" == "true" ]]; then
+            show_instance_hub
+            return
+        fi
+        LOGE "Please enter the correct number [0-${max_option}]"
+        ;;
     *)
-        LOGE "Please enter the correct number [0-26]"
+        LOGE "Please enter the correct number [0-${max_option}]"
         ;;
     esac
 }
@@ -2388,5 +2512,9 @@ if [[ $# > 0 ]]; then
     *) show_usage ;;
     esac
 else
-    show_menu
+    if [[ -t 0 && -z "${initial_xui_instance}" ]]; then
+        show_instance_hub
+    else
+        show_menu
+    fi
 fi

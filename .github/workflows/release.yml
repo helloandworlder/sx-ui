@@ -112,6 +112,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: sx-ui-linux-*
 
       - uses: softprops/action-gh-release@v2
         with:

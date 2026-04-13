@@ -2,6 +2,8 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -288,7 +290,15 @@ type AddClientRequest struct {
 		Comment    string `json:"comment"`
 		EgressBps  int64  `json:"egressBps"`
 		IngressBps int64  `json:"ingressBps"`
+		SubID      string `json:"subId"`
+		EgressRate *rateLimitInput `json:"egressRate,omitempty"`
+		IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
 	} `json:"accounts"`
+}
+
+type rateLimitInput struct {
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
 }
 
 type inboundAccountPayload struct {
@@ -299,8 +309,75 @@ type inboundAccountPayload struct {
 	Comment    string `json:"comment"`
 	EgressBps  int64  `json:"egressBps"`
 	IngressBps int64  `json:"ingressBps"`
+	SubID      string `json:"subId"`
+	EgressRate *rateLimitInput `json:"egressRate,omitempty"`
+	IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
 	CreatedAt  int64  `json:"created_at,omitempty"`
 	UpdatedAt  int64  `json:"updated_at,omitempty"`
+}
+
+func rateLimitFactor(unit string) float64 {
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "b/s", "bps":
+		return 1
+	case "kbps", "kb/s":
+		return 125
+	case "mbps", "mb/s":
+		return 125000
+	case "gbps", "gb/s":
+		return 125000000
+	default:
+		return 0
+	}
+}
+
+func normalizeRateLimitBps(raw int64, rate *rateLimitInput) int64 {
+	if rate == nil {
+		return raw
+	}
+	if rate.Value <= 0 {
+		return 0
+	}
+	factor := rateLimitFactor(rate.Unit)
+	if factor <= 0 {
+		return raw
+	}
+	return int64(math.Round(rate.Value * factor))
+}
+
+func splitRateLimitBps(bps int64) (float64, string) {
+	if bps <= 0 {
+		return 0, "Mbps"
+	}
+	switch {
+	case bps >= 125000000:
+		return math.Round((float64(bps)/125000000)*1000) / 1000, "Gbps"
+	case bps >= 125000:
+		return math.Round((float64(bps)/125000)*1000) / 1000, "Mbps"
+	case bps >= 125:
+		return math.Round((float64(bps)/125)*1000) / 1000, "Kbps"
+	default:
+		return float64(bps), "B/s"
+	}
+}
+
+func rateLimitView(bps int64) gin.H {
+	value, unit := splitRateLimitBps(bps)
+	return gin.H{"bps": bps, "value": value, "unit": unit}
+}
+
+func extractRuleTag(ruleJSON string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(ruleJSON), &payload); err != nil {
+		return ""
+	}
+	if tag, ok := payload["ruleTag"].(string); ok {
+		return tag
+	}
+	if tag, ok := payload["rule_tag"].(string); ok {
+		return tag
+	}
+	return ""
 }
 
 func (a *RestAPIController) syncAccountRateLimit(email string, egressBps, ingressBps int64) error {
@@ -312,6 +389,14 @@ func (a *RestAPIController) syncAccountRateLimit(email string, egressBps, ingres
 	}
 	_, err := a.rateLimitService.Set(email, egressBps, ingressBps)
 	return err
+}
+
+func buildDynamicAccountUser(user, pass, email string) map[string]any {
+	return map[string]any{
+		"user":     user,
+		"password": pass,
+		"email":    email,
+	}
 }
 
 func boolOrDefault(value *bool, fallback bool) bool {
@@ -423,6 +508,9 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 					Comment    string `json:"comment"`
 					EgressBps  int64  `json:"egressBps"`
 					IngressBps int64  `json:"ingressBps"`
+					SubID      string `json:"subId"`
+					EgressRate *rateLimitInput `json:"egressRate,omitempty"`
+					IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
 				}{User: cl.Email, Pass: cl.Email, Email: cl.Email})
 			}
 		}
@@ -431,15 +519,18 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 		json.Unmarshal([]byte(inbound.Settings), &existSettings)
 		existAccounts, _ := existSettings["accounts"].([]any)
 		for _, acc := range req.Accounts {
+			egressBps := normalizeRateLimitBps(acc.EgressBps, acc.EgressRate)
+			ingressBps := normalizeRateLimitBps(acc.IngressBps, acc.IngressRate)
 			nowTs := time.Now().UnixMilli()
 			enable := boolOrDefault(acc.Enable, true)
 			existAccounts = append(existAccounts, map[string]any{
 				"user": acc.User, "pass": acc.Pass, "email": acc.Email,
 				"enable": enable, "comment": acc.Comment,
-				"egressBps": acc.EgressBps, "ingressBps": acc.IngressBps,
+				"subId": acc.SubID,
+				"egressBps": egressBps, "ingressBps": ingressBps,
 				"created_at": nowTs, "updated_at": nowTs,
 			})
-			if err := a.syncAccountRateLimit(acc.Email, acc.EgressBps, acc.IngressBps); err != nil {
+			if err := a.syncAccountRateLimit(acc.Email, egressBps, ingressBps); err != nil {
 				a.fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -452,7 +543,19 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		a.xrayService.SetToNeedRestart()
+		for _, acc := range req.Accounts {
+			enable := boolOrDefault(acc.Enable, true)
+			if !enable {
+				continue
+			}
+			a.xrayDynamic.DynamicAddUser(
+				string(inbound.Protocol),
+				inbound.Tag,
+				buildDynamicAccountUser(acc.User, acc.Pass, acc.Email),
+				normalizeRateLimitBps(acc.EgressBps, acc.EgressRate),
+				normalizeRateLimitBps(acc.IngressBps, acc.IngressRate),
+			)
+		}
 		a.created(c, req.Accounts)
 
 	case model.Shadowsocks:
@@ -516,7 +619,9 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			a.fail(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		account.Email = email
+		if strings.TrimSpace(account.Email) == "" {
+			account.Email = email
+		}
 		if _, err := a.configSeqService.BumpSeqAndHash(); err != nil {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
@@ -527,6 +632,8 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			return
 		}
 		accounts, _ := settings["accounts"].([]any)
+		oldEmail := email
+		oldEnabled := true
 		found := false
 		for idx, raw := range accounts {
 			item, _ := raw.(map[string]any)
@@ -535,6 +642,7 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			if accEmail != email && accUser != email {
 				continue
 			}
+			oldEmail = accEmail
 			if v, ok := item["created_at"].(float64); ok {
 				account.CreatedAt = int64(v)
 			}
@@ -546,10 +654,17 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			if rawEnable, ok := item["enable"].(bool); ok {
 				enable = rawEnable
 			}
+			oldEnabled = enable
 			enable = boolOrDefault(account.Enable, enable)
+			if existingSubID, ok := item["subId"].(string); ok && account.SubID == "" {
+				account.SubID = existingSubID
+			}
+			account.EgressBps = normalizeRateLimitBps(account.EgressBps, account.EgressRate)
+			account.IngressBps = normalizeRateLimitBps(account.IngressBps, account.IngressRate)
 			accounts[idx] = map[string]any{
 				"user": account.User, "pass": account.Pass, "email": account.Email,
 				"enable": enable, "comment": account.Comment,
+				"subId": account.SubID,
 				"egressBps": account.EgressBps, "ingressBps": account.IngressBps,
 				"created_at": account.CreatedAt, "updated_at": account.UpdatedAt,
 			}
@@ -567,11 +682,28 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if oldEmail != account.Email {
+			if err := a.syncAccountRateLimit(oldEmail, 0, 0); err != nil {
+				a.fail(c, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
 		if err := a.syncAccountRateLimit(account.Email, account.EgressBps, account.IngressBps); err != nil {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		a.xrayService.SetToNeedRestart()
+		if oldEnabled {
+			a.xrayDynamic.DynamicRemoveUser(inbound.Tag, oldEmail)
+		}
+		if boolOrDefault(account.Enable, true) {
+			a.xrayDynamic.DynamicAddUser(
+				string(inbound.Protocol),
+				inbound.Tag,
+				buildDynamicAccountUser(account.User, account.Pass, account.Email),
+				account.EgressBps,
+				account.IngressBps,
+			)
+		}
 		a.ok(c, account)
 		return
 	}
@@ -581,7 +713,9 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 		a.fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	client.Email = email
+	if strings.TrimSpace(client.Email) == "" {
+		client.Email = email
+	}
 
 	if _, err := a.configSeqService.BumpSeqAndHash(); err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
@@ -633,12 +767,19 @@ func (a *RestAPIController) deleteClient(c *gin.Context) {
 		json.Unmarshal([]byte(inbound.Settings), &settings)
 		accounts, _ := settings["accounts"].([]any)
 		var filtered []any
+		wasEnabled := false
 		for _, acc := range accounts {
 			m, _ := acc.(map[string]any)
 			accEmail, _ := m["email"].(string)
 			accUser, _ := m["user"].(string)
 			if accEmail != email && accUser != email {
 				filtered = append(filtered, acc)
+				continue
+			}
+			if rawEnable, ok := m["enable"].(bool); ok {
+				wasEnabled = rawEnable
+			} else {
+				wasEnabled = true
 			}
 		}
 		settings["accounts"] = filtered
@@ -650,7 +791,9 @@ func (a *RestAPIController) deleteClient(c *gin.Context) {
 			return
 		}
 		_ = a.rateLimitService.Remove(email)
-		a.xrayService.SetToNeedRestart()
+		if wasEnabled {
+			a.xrayDynamic.DynamicRemoveUser(inbound.Tag, email)
+		}
 
 	default:
 		needRestart, err := a.inboundService.DelInboundClientByEmail(id, email)
@@ -715,11 +858,17 @@ func (a *RestAPIController) updateOutbound(c *gin.Context) {
 		return
 	}
 	out.Id = id
+	existing, _ := a.outboundService.GetById(id)
 	if err := a.outboundService.Update(&out); err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.xrayService.SetToNeedRestart()
+	if existing != nil && existing.Enabled && existing.Tag != "" {
+		a.xrayDynamic.DynamicDelOutbound(existing.Tag)
+	}
+	if out.Enabled {
+		a.xrayDynamic.DynamicAddOutbound(&out)
+	}
 	a.ok(c, out)
 }
 
@@ -734,7 +883,7 @@ func (a *RestAPIController) deleteOutbound(c *gin.Context) {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if existing != nil {
+	if existing != nil && existing.Enabled && existing.Tag != "" {
 		a.xrayDynamic.DynamicDelOutbound(existing.Tag)
 	}
 	a.ok(c, nil)
@@ -761,7 +910,13 @@ func (a *RestAPIController) createRoute(c *gin.Context) {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.xrayDynamic.DynamicAddRoute(rule.RuleJson)
+	if _, err := a.routingService.EnsureRuleTag(&rule, fmt.Sprintf("route-%d", rule.Id)); err != nil {
+		a.fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rule.Enabled {
+		a.xrayDynamic.DynamicAddRoute(rule.RuleJson)
+	}
 	a.created(c, rule)
 }
 
@@ -775,12 +930,30 @@ func (a *RestAPIController) updateRoute(c *gin.Context) {
 		a.fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	existing, _ := a.routingService.GetById(id)
 	rule.Id = id
+	fallbackTag := fmt.Sprintf("route-%d", id)
+	if existing != nil {
+		if tag := extractRuleTag(existing.RuleJson); tag != "" {
+			fallbackTag = tag
+		}
+	}
+	if _, err := a.routingService.EnsureRuleTag(&rule, fallbackTag); err != nil {
+		a.fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.routingService.Update(&rule); err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.xrayService.SetToNeedRestart()
+	if existing != nil && existing.Enabled {
+		if oldTag, err := a.routingService.EnsureRuleTag(existing, fmt.Sprintf("route-%d", existing.Id)); err == nil && oldTag != "" {
+			a.xrayDynamic.DynamicDelRoute(oldTag)
+		}
+	}
+	if rule.Enabled {
+		a.xrayDynamic.DynamicAddRoute(rule.RuleJson)
+	}
 	a.ok(c, rule)
 }
 
@@ -789,11 +962,16 @@ func (a *RestAPIController) deleteRoute(c *gin.Context) {
 	if !ok {
 		return
 	}
+	existing, _ := a.routingService.GetById(id)
 	if err := a.routingService.Delete(id); err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.xrayService.SetToNeedRestart()
+	if existing != nil && existing.Enabled {
+		if oldTag, err := a.routingService.EnsureRuleTag(existing, fmt.Sprintf("route-%d", existing.Id)); err == nil && oldTag != "" {
+			a.xrayDynamic.DynamicDelRoute(oldTag)
+		}
+	}
 	a.ok(c, nil)
 }
 
@@ -810,7 +988,24 @@ func (a *RestAPIController) reorderRoutes(c *gin.Context) {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.xrayService.SetToNeedRestart()
+	rules, err := a.routingService.GetAll()
+	if err != nil {
+		a.fail(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for i := range rules {
+		if !rules[i].Enabled {
+			continue
+		}
+		if oldTag, err := a.routingService.EnsureRuleTag(&rules[i], fmt.Sprintf("route-%d", rules[i].Id)); err == nil && oldTag != "" {
+			a.xrayDynamic.DynamicDelRoute(oldTag)
+		}
+	}
+	for i := range rules {
+		if rules[i].Enabled {
+			a.xrayDynamic.DynamicAddRoute(rules[i].RuleJson)
+		}
+	}
 	a.ok(c, nil)
 }
 
@@ -827,7 +1022,15 @@ func (a *RestAPIController) getRateLimit(c *gin.Context) {
 		a.fail(c, http.StatusNotFound, "no rate limit set")
 		return
 	}
-	a.ok(c, rl)
+	a.ok(c, gin.H{
+		"id":          rl.Id,
+		"email":       rl.Email,
+		"egressBps":   rl.EgressBps,
+		"ingressBps":  rl.IngressBps,
+		"egressRate":  rateLimitView(rl.EgressBps),
+		"ingressRate": rateLimitView(rl.IngressBps),
+		"updatedAt":   rl.UpdatedAt,
+	})
 }
 
 func (a *RestAPIController) setRateLimit(c *gin.Context) {
@@ -835,6 +1038,8 @@ func (a *RestAPIController) setRateLimit(c *gin.Context) {
 	var body struct {
 		EgressBps  int64 `json:"egressBps"`
 		IngressBps int64 `json:"ingressBps"`
+		EgressRate *rateLimitInput `json:"egressRate,omitempty"`
+		IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		a.fail(c, http.StatusBadRequest, err.Error())
@@ -844,14 +1049,24 @@ func (a *RestAPIController) setRateLimit(c *gin.Context) {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	rl, err := a.rateLimitService.Set(email, body.EgressBps, body.IngressBps)
+	egressBps := normalizeRateLimitBps(body.EgressBps, body.EgressRate)
+	ingressBps := normalizeRateLimitBps(body.IngressBps, body.IngressRate)
+	rl, err := a.rateLimitService.Set(email, egressBps, ingressBps)
 	if err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Push to the running Xray subprocess over gRPC immediately.
-	a.xrayDynamic.DynamicSetRateLimit(email, body.EgressBps, body.IngressBps)
-	a.ok(c, rl)
+	a.xrayDynamic.DynamicSetRateLimit(email, egressBps, ingressBps)
+	a.ok(c, gin.H{
+		"id":          rl.Id,
+		"email":       rl.Email,
+		"egressBps":   rl.EgressBps,
+		"ingressBps":  rl.IngressBps,
+		"egressRate":  rateLimitView(rl.EgressBps),
+		"ingressRate": rateLimitView(rl.IngressBps),
+		"updatedAt":   rl.UpdatedAt,
+	})
 }
 
 func (a *RestAPIController) removeRateLimit(c *gin.Context) {
@@ -884,9 +1099,11 @@ func (a *RestAPIController) getClientSpeed(c *gin.Context) {
 	email := c.Param("email")
 	eBps, iBps := a.xrayDynamic.DynamicGetUserSpeed(email)
 	a.ok(c, gin.H{
-		"email":      email,
-		"egressBps":  eBps,
-		"ingressBps": iBps,
+		"email":       email,
+		"egressBps":   eBps,
+		"ingressBps":  iBps,
+		"egressRate":  rateLimitView(eBps),
+		"ingressRate": rateLimitView(iBps),
 	})
 }
 
@@ -945,6 +1162,17 @@ func (a *RestAPIController) getNodeStatus(c *gin.Context) {
 		"xrayRunning": a.xrayService.IsXrayRunning(),
 		"xrayVersion": a.xrayService.GetXrayVersion(),
 		"configSeq":   seq,
+		"panelFlavor": "sx-ui",
+		"capabilities": []string{
+			"config_seq",
+			"node_meta",
+			"sync_state",
+			"full_sync",
+			"outbound_crud",
+			"routing_crud",
+			"rate_limit",
+			"public_ips",
+		},
 	})
 }
 

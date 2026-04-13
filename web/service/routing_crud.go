@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+
 	"github.com/helloandworlder/sx-ui/v2/database"
 	"github.com/helloandworlder/sx-ui/v2/database/model"
 )
@@ -61,6 +63,41 @@ func (s *RoutingCrudService) Delete(id int) error {
 		return err
 	}
 	return db.Delete(&model.RoutingRule{}, id).Error
+}
+
+func (s *RoutingCrudService) SaveRuleJson(id int, ruleJSON string) error {
+	db := database.GetDB()
+	return db.Model(&model.RoutingRule{}).Where("id = ?", id).Update("rule_json", ruleJSON).Error
+}
+
+func (s *RoutingCrudService) EnsureRuleTag(rule *model.RoutingRule, fallback string) (string, error) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(rule.RuleJson), &payload); err != nil {
+		return "", err
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if tag, ok := payload["ruleTag"].(string); ok && tag != "" {
+		return tag, nil
+	}
+	if tag, ok := payload["rule_tag"].(string); ok && tag != "" {
+		payload["ruleTag"] = tag
+		delete(payload, "rule_tag")
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		rule.RuleJson = string(encoded)
+		return tag, s.SaveRuleJson(rule.Id, rule.RuleJson)
+	}
+	payload["ruleTag"] = fallback
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	rule.RuleJson = string(encoded)
+	return fallback, s.SaveRuleJson(rule.Id, rule.RuleJson)
 }
 
 // Reorder accepts a slice of {id, priority} and bulk-updates.

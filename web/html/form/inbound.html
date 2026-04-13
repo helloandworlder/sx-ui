@@ -127,6 +127,11 @@
     {{template "form/shadowsocks"}}
 </template>
 
+<!-- hysteria2 -->
+<template v-if="inbound.protocol === Protocols.HYSTERIA">
+    {{template "form/hysteria"}}
+</template>
+
 <!-- tunnel -->
 <template v-if="inbound.protocol === Protocols.TUNNEL">
     {{template "form/tunnel"}}

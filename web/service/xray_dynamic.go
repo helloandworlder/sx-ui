@@ -203,6 +203,54 @@ func (s *XrayDynamicService) DynamicDelRoute(ruleTag string) {
 	logger.Infof("gRPC: removed routing rule %s", ruleTag)
 }
 
+func (s *XrayDynamicService) DynamicReplaceRouting(routingJSON string) {
+	api, err := s.getAPI()
+	if err != nil {
+		s.XrayService.SetToNeedRestart()
+		return
+	}
+	defer api.Close()
+
+	if err := api.ReplaceRoutingConfig([]byte(routingJSON)); err != nil {
+		logger.Warning("gRPC ReplaceRoutingConfig failed:", err)
+		s.XrayService.SetToNeedRestart()
+		return
+	}
+	logger.Info("gRPC: replaced routing config")
+}
+
+func (s *XrayDynamicService) DynamicReplaceReverse(reverseJSON string) {
+	api, err := s.getAPI()
+	if err != nil {
+		s.XrayService.SetToNeedRestart()
+		return
+	}
+	defer api.Close()
+
+	if err := api.ReplaceReverseConfig([]byte(reverseJSON)); err != nil {
+		logger.Warning("gRPC ReplaceReverseConfig failed:", err)
+		s.XrayService.SetToNeedRestart()
+		return
+	}
+	logger.Info("gRPC: replaced reverse config")
+}
+
+func (s *XrayDynamicService) DynamicReplaceOutbounds(outboundsJSON string, preserveTags ...string) {
+	api, err := s.getAPI()
+	if err != nil {
+		s.XrayService.SetToNeedRestart()
+		return
+	}
+	defer api.Close()
+
+	if err := api.ReplaceOutbounds([]byte(outboundsJSON), preserveTags...); err != nil {
+		logger.Warning("gRPC ReplaceOutbounds failed:", err)
+		s.XrayService.SetToNeedRestart()
+		return
+	}
+	logger.Info("gRPC: replaced outbounds")
+}
+
 func buildOutboundJSON(out *model.Outbound) []byte {
 	obj := map[string]any{
 		"tag":      out.Tag,

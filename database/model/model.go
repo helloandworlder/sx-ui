@@ -21,6 +21,7 @@ const (
 	Trojan      Protocol = "trojan"
 	Shadowsocks Protocol = "shadowsocks"
 	Mixed       Protocol = "mixed"
+	Hysteria    Protocol = "hysteria"
 	WireGuard   Protocol = "wireguard"
 )
 
@@ -170,6 +171,8 @@ type NodeMeta struct {
 type Client struct {
 	ID         string `json:"id"`                           // Unique client identifier
 	Security   string `json:"security"`                     // Security method (e.g., "auto", "aes-128-gcm")
+	Method     string `json:"method,omitempty"`             // Cipher / method for multi-user shadowsocks
+	Auth       string `json:"auth,omitempty"`               // Auth secret for hysteria2
 	Password   string `json:"password"`                     // Client password
 	Flow       string `json:"flow"`                         // Flow control (XTLS)
 	Email      string `json:"email"`                        // Client email identifier

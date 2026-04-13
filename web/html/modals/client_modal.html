@@ -25,6 +25,7 @@
         clientIps: null,
         delayedStart: false,
         ok() {
+            this.syncClientRateLimit(clientModalApp.client);
             if (clientModal.isEdit) {
                 ObjectUtil.execute(clientModal.confirm, clientModalApp.client, clientModal.dbInbound.id, clientModal.oldClientId);
             } else {
@@ -47,10 +48,11 @@
                 if (this.clients[index].expiryTime < 0) {
                     this.delayedStart = true;
                 }
-                this.oldClientId = this.getClientId(dbInbound.protocol, clients[index]);
+                this.oldClientId = this.getClientId(dbInbound.protocol, this.clients[index]);
             } else {
                 this.addClient(this.inbound, this.clients);
             }
+            this.initClientRateLimit(this.clients[this.index]);
             this.clientStats = this.dbInbound.clientStats.find(row => row.email === this.clients[this.index].email);
             this.confirm = confirm;
         },  
@@ -60,6 +62,7 @@
                 case Protocols.SOCKS:
                 case Protocols.MIXED: return client.email || client.user;
                 case Protocols.TROJAN: return client.password;
+                case Protocols.HYSTERIA: return client.password;
                 case Protocols.SHADOWSOCKS: return client.email;
                 default: return client.id;
             }
@@ -75,6 +78,24 @@
                 case Protocols.MIXED: return clients.push(new Inbound.MixedSettings.SocksAccount());
                 default: return null;
             }
+        },
+        initClientRateLimit(client) {
+            if (!client) {
+                return;
+            }
+            const egress = RateLimitUtil.fromBps(client.egressBps);
+            const ingress = RateLimitUtil.fromBps(client.ingressBps);
+            Vue.set(client, 'egressRateValue', egress.value);
+            Vue.set(client, 'egressRateUnit', egress.unit);
+            Vue.set(client, 'ingressRateValue', ingress.value);
+            Vue.set(client, 'ingressRateUnit', ingress.unit);
+        },
+        syncClientRateLimit(client) {
+            if (!client) {
+                return;
+            }
+            client.egressBps = RateLimitUtil.toBps(client.egressRateValue, client.egressRateUnit);
+            client.ingressBps = RateLimitUtil.toBps(client.ingressRateValue, client.ingressRateUnit);
         },
         close() {
             clientModal.visible = false;
@@ -106,9 +127,9 @@
                 return app.datepicker;
             },
             get isTrafficExhausted() {
-                if (!clientStats) return false
-                if (clientStats.total <= 0) return false
-                if (clientStats.up + clientStats.down < clientStats.total) return false
+                if (!this.clientStats) return false
+                if (this.clientStats.total <= 0) return false
+                if (this.clientStats.up + this.clientStats.down < this.clientStats.total) return false
                 return true
             },
             get isExpiry() {

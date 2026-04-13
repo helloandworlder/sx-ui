@@ -92,7 +92,7 @@ func GetDBFolderPath() string {
 	if runtime.GOOS == "windows" {
 		return getBaseDir()
 	}
-	return "/etc/x-ui"
+	return "/etc/sx-ui"
 }
 
 // GetDBPath returns the full path to the database file.
@@ -109,7 +109,7 @@ func GetLogFolder() string {
 	if runtime.GOOS == "windows" {
 		return filepath.Join(".", "log")
 	}
-	return "/var/log/x-ui"
+	return "/var/log/sx-ui"
 }
 
 func copyFile(src, dst string) error {

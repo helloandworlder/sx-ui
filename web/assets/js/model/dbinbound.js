@@ -55,6 +55,10 @@ class DBInbound {
         return this.protocol === Protocols.MIXED;
     }
 
+    get isHysteria() {
+        return this.protocol === Protocols.HYSTERIA;
+    }
+
     get isHTTP() {
         return this.protocol === Protocols.HTTP;
     }
@@ -128,6 +132,7 @@ class DBInbound {
             case Protocols.VMESS:
             case Protocols.VLESS:
             case Protocols.TROJAN:
+            case Protocols.HYSTERIA:
             case Protocols.HTTP:
             case Protocols.SOCKS:
             case Protocols.MIXED:
@@ -144,6 +149,7 @@ class DBInbound {
             case Protocols.VMESS:
             case Protocols.VLESS:
             case Protocols.TROJAN:
+            case Protocols.HYSTERIA:
             case Protocols.SHADOWSOCKS:
                 return true;
             default:

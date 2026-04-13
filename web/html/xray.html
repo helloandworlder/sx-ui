@@ -419,6 +419,23 @@
           await this.getXraySetting();
         }
       },
+      async applyTemplateChanges() {
+        this.xraySetting = JSON.stringify(this.templateSettings, null, 2);
+        await this.updateXraySetting();
+      },
+      async applyRuntimeSections(sections) {
+        this.xraySetting = JSON.stringify(this.templateSettings, null, 2);
+        this.loading(true);
+        const msg = await HttpUtil.post("/panel/xray/runtimeApply", {
+          xraySetting: this.xraySetting,
+          outboundTestUrl: this.outboundTestUrl || 'https://www.google.com/generate_204',
+          sections: sections,
+        });
+        this.loading(false);
+        if (msg.success) {
+          await this.getXraySetting();
+        }
+      },
       async restartXray() {
         this.loading(true);
         const msg = await HttpUtil.post("/panel/api/server/restartXrayService");
@@ -592,11 +609,12 @@
         outModal.show({
           title: '{{ i18n "pages.xray.outbound.addOutbound"}}',
           okText: '{{ i18n "pages.xray.outbound.addOutbound" }}',
-          confirm: (outbound) => {
+          confirm: async (outbound) => {
             outModal.loading();
             if (outbound.tag.length > 0) {
               this.templateSettings.outbounds.push(outbound);
               this.outboundSettings = JSON.stringify(this.templateSettings.outbounds);
+              await this.applyRuntimeSections(['outbounds']);
             }
             outModal.close();
           },
@@ -608,25 +626,28 @@
         outModal.show({
           title: '{{ i18n "pages.xray.outbound.editOutbound"}} ' + (index + 1),
           outbound: app.templateSettings.outbounds[index],
-          confirm: (outbound) => {
+          confirm: async (outbound) => {
             outModal.loading();
             this.templateSettings.outbounds[index] = outbound;
             this.outboundSettings = JSON.stringify(this.templateSettings.outbounds);
+            await this.applyRuntimeSections(['outbounds']);
             outModal.close();
           },
           isEdit: true,
           tags: this.outboundData.filter((o) => o.key != index).map(obj => obj.tag)
         });
       },
-      deleteOutbound(index) {
+      async deleteOutbound(index) {
         outbounds = this.templateSettings.outbounds;
         outbounds.splice(index, 1);
         this.outboundSettings = JSON.stringify(outbounds);
+        await this.applyRuntimeSections(['outbounds']);
       },
-      setFirstOutbound(index) {
+      async setFirstOutbound(index) {
         outbounds = this.templateSettings.outbounds;
         outbounds.splice(0, 0, outbounds.splice(index, 1)[0]);
         this.outboundSettings = JSON.stringify(outbounds);
+        await this.applyRuntimeSections(['outbounds']);
       },
       async testOutbound(index) {
         const outbound = this.templateSettings.outbounds[index];
@@ -697,7 +718,7 @@
         reverseModal.show({
           title: '{{ i18n "pages.xray.outbound.addReverse"}}',
           okText: '{{ i18n "pages.xray.outbound.addReverse" }}',
-          confirm: (reverse, rules) => {
+          confirm: async (reverse, rules) => {
             reverseModal.loading();
             if (reverse.tag.length > 0) {
               newTemplateSettings = this.templateSettings;
@@ -709,6 +730,7 @@
               // Add related rules
               this.templateSettings.routing.rules.push(...rules);
               this.routingRuleSettings = JSON.stringify(this.templateSettings.routing.rules);
+              await this.applyRuntimeSections(['routing', 'reverse']);
             }
             reverseModal.close();
           },
@@ -725,7 +747,7 @@
           title: '{{ i18n "pages.xray.outbound.editReverse"}} ' + (index + 1),
           reverse: this.reverseData[index],
           rules: oldRules,
-          confirm: (reverse, rules) => {
+          confirm: async (reverse, rules) => {
             reverseModal.loading();
             if (reverse.tag.length > 0) {
               oldData = this.reverseData[index];
@@ -750,13 +772,14 @@
               oldRuleIndex0 != -1 ? newRules[oldRuleIndex0] = rules[0] : newRules.push(rules[0]);
               oldRuleIndex1 != -1 ? newRules[oldRuleIndex1] = rules[1] : newRules.push(rules[1]);
               this.routingRuleSettings = JSON.stringify(newRules);
+              await this.applyRuntimeSections(['routing', 'reverse']);
             }
             reverseModal.close();
           },
           isEdit: true
         });
       },
-      deleteReverse(index) {
+      async deleteReverse(index) {
         oldData = this.reverseData[index];
         newTemplateSettings = this.templateSettings;
         reverseTypeObj = newTemplateSettings.reverse[oldData.type + 's'];
@@ -777,6 +800,7 @@
         newTemplateSettings.routing.rules = newRules;
 
         this.templateSettings = newTemplateSettings;
+        await this.applyRuntimeSections(['routing', 'reverse']);
       },
       async refreshOutboundTraffic() {
         if (!this.refreshing) {
@@ -815,7 +839,7 @@
             selector: [],
             fallbackTag: ''
           },
-          confirm: (balancer) => {
+          confirm: async (balancer) => {
             balancerModal.loading();
             newTemplateSettings = this.templateSettings;
             if (newTemplateSettings.routing.balancers == undefined) {
@@ -834,6 +858,7 @@
             newTemplateSettings.routing.balancers.push(tmpBalancer);
             this.templateSettings = newTemplateSettings;
             this.updateObservatorySelectors();
+            await this.applyRuntimeSections(['routing']);
             balancerModal.close();
             this.changeObsCode();
           },
@@ -847,7 +872,7 @@
           okText: '{{ i18n "sure" }}',
           balancerTags: this.balancersData.filter((o) => !ObjectUtil.isEmpty(o.tag)).map(obj => obj.tag),
           balancer: this.balancersData[index],
-          confirm: (balancer) => {
+          confirm: async (balancer) => {
             balancerModal.loading();
             newTemplateSettings = this.templateSettings;
 
@@ -882,6 +907,7 @@
             }
             this.templateSettings = newTemplateSettings;
             this.updateObservatorySelectors();
+            await this.applyRuntimeSections(['routing']);
             balancerModal.close();
             this.changeObsCode();
           },
@@ -925,7 +951,7 @@
         this.templateSettings = newTemplateSettings;
         this.changeObsCode();
       },
-      deleteBalancer(index) {
+      async deleteBalancer(index) {
         newTemplateSettings = this.templateSettings;
 
         // Remove from balancers
@@ -943,6 +969,7 @@
         this.updateObservatorySelectors();
         this.obsSettings = '';
         this.changeObsCode()
+        await this.applyRuntimeSections(['routing']);
       },
       openDNSPresets() {
         dnsPresetsModal.show({
@@ -1018,11 +1045,12 @@
         ruleModal.show({
           title: '{{ i18n "pages.xray.rules.add"}}',
           okText: '{{ i18n "pages.xray.rules.add" }}',
-          confirm: (rule) => {
+          confirm: async (rule) => {
             ruleModal.loading();
             if (JSON.stringify(rule).length > 3) {
               this.templateSettings.routing.rules.push(rule);
               this.routingRuleSettings = JSON.stringify(this.templateSettings.routing.rules);
+              await this.applyRuntimeSections(['routing']);
             }
             ruleModal.close();
           },
@@ -1033,27 +1061,30 @@
         ruleModal.show({
           title: '{{ i18n "pages.xray.rules.edit"}} ' + (index + 1),
           rule: app.templateSettings.routing.rules[index],
-          confirm: (rule) => {
+          confirm: async (rule) => {
             ruleModal.loading();
             if (JSON.stringify(rule).length > 3) {
               this.templateSettings.routing.rules[index] = rule;
               this.routingRuleSettings = JSON.stringify(this.templateSettings.routing.rules);
+              await this.applyRuntimeSections(['routing']);
             }
             ruleModal.close();
           },
           isEdit: true
         });
       },
-      replaceRule(old_index, new_index) {
+      async replaceRule(old_index, new_index) {
         rules = this.templateSettings.routing.rules;
         if (new_index >= rules.length) rules.push(undefined);
         rules.splice(new_index, 0, rules.splice(old_index, 1)[0]);
         this.routingRuleSettings = JSON.stringify(rules);
+        await this.applyRuntimeSections(['routing']);
       },
-      deleteRule(index) {
+      async deleteRule(index) {
         rules = this.templateSettings.routing.rules;
         rules.splice(index, 1);
         this.routingRuleSettings = JSON.stringify(rules);
+        await this.applyRuntimeSections(['routing']);
       },
       showWarp() {
         warpModal.show();
