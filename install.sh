@@ -1214,7 +1214,11 @@ main() {
 
     echo -e "${green}Running...${plain}"
     install_base
-    install_x-ui "${install_version}"
+    if [[ -n "${install_version}" ]]; then
+        install_x-ui "${install_version}"
+    else
+        install_x-ui
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

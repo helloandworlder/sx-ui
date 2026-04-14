@@ -93,9 +93,34 @@ test_explicit_busy_port_fails() {
   fi
 }
 
+test_main_does_not_forward_empty_version() {
+  local captured_call=""
+
+  install_base() { :; }
+  require_root() { :; }
+  detect_release() { :; }
+  ensure_isolated_instance_layout() { :; }
+  install_x-ui() {
+    if [[ $# -eq 0 ]]; then
+      captured_call="no-args"
+    else
+      captured_call="$1"
+    fi
+  }
+
+  export XUI_INSTANCE=main
+  install_version=""
+  xui_instance="${XUI_INSTANCE}"
+
+  main --instance main >/dev/null 2>&1
+
+  assert_eq "no-args" "${captured_call}" "main should call install_x-ui without an empty version argument"
+}
+
 test_source_is_safe_and_defaults_to_isolated_instance_layout
 test_legacy_shared_runtime_layout_is_rejected
 test_auto_port_selection_skips_busy_ports
 test_explicit_busy_port_fails
+test_main_does_not_forward_empty_version
 
 echo "install-instance-isolation: ok"
