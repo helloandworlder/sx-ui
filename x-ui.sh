@@ -135,8 +135,45 @@ apply_instance_paths() {
 prompt_instance_name
 apply_instance_paths
 
+instance_port_offset() {
+    local instance="${1:-main}"
+    local checksum
+    checksum="$(printf '%s' "${instance}" | cksum | awk '{print $1}')"
+    echo $((checksum % 10000))
+}
+
+preferred_instance_port() {
+    local instance="$1"
+    local base_port="$2"
+    echo $((base_port + $(instance_port_offset "${instance}")))
+}
+
+pick_available_instance_port() {
+    local instance="$1"
+    local base_port="$2"
+    local preferred
+    local offset
+    local port
+
+    preferred="$(preferred_instance_port "${instance}" "${base_port}")"
+    for ((offset = 0; offset < 10000; offset++)); do
+        port=$((base_port + ((preferred - base_port + offset) % 10000)))
+        if ! is_port_in_use "${port}"; then
+            echo "${port}"
+            return 0
+        fi
+    done
+    echo "${preferred}"
+}
+
 current_panel_port() {
-    ${xui_folder}/x-ui setting -show true 2>/dev/null | grep -Eo 'port: .+' | awk '{print $2}'
+    local current_port
+    current_port="$(${xui_folder}/x-ui setting -show true 2>/dev/null | grep -Eo 'port: .+' | awk '{print $2}')"
+    if [[ -n "${current_port}" ]]; then
+        echo "${current_port}"
+        return 0
+    fi
+    pick_available_instance_port "${xui_instance}" 10000
 }
 
 current_sub_port() {
@@ -145,7 +182,7 @@ current_sub_port() {
         sqlite3 "${db_path}" "SELECT value FROM settings WHERE key = 'subPort' LIMIT 1;" 2>/dev/null
         return 0
     fi
-    echo "2096"
+    pick_available_instance_port "${xui_instance}" 20000
 }
 
 select_instance() {

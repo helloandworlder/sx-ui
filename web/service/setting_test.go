@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"testing"
 )
 
@@ -77,4 +79,69 @@ func TestSetXrayInternalPortsOnTemplateUsesRequestedPorts(t *testing.T) {
 	if listen := readTemplateMetricsListen(t, updated); listen != "127.0.0.1:41111" {
 		t.Fatalf("unexpected metrics listen: %s", listen)
 	}
+}
+
+func TestDefaultInstancePortsUseInstanceRanges(t *testing.T) {
+	webPort, subPort, apiPort, metricsPort := defaultPortsForInstance("hk01")
+
+	if webPort < 10000 || webPort > 19999 {
+		t.Fatalf("unexpected web port range: %d", webPort)
+	}
+	if subPort < 20000 || subPort > 29999 {
+		t.Fatalf("unexpected sub port range: %d", subPort)
+	}
+	if apiPort < 30000 || apiPort > 39999 {
+		t.Fatalf("unexpected xray api port range: %d", apiPort)
+	}
+	if metricsPort < 40000 || metricsPort > 49999 {
+		t.Fatalf("unexpected xray metrics port range: %d", metricsPort)
+	}
+	if webPort == 2053 {
+		t.Fatalf("web port must not fall back to legacy default")
+	}
+	if subPort == 2096 {
+		t.Fatalf("sub port must not fall back to legacy default")
+	}
+}
+
+func TestDefaultInstancePortsRetreatFromBusyPorts(t *testing.T) {
+	instance := "busy-hk01"
+	preferredWebPort := preferredInstancePort(instance, webInstancePortBase, false)
+	preferredSubPort := preferredInstancePort(instance, subInstancePortBase, false)
+	preferredAPIPort := preferredInstancePort(instance, xrayInstanceAPIPortBase, true)
+	preferredMetricsPort := preferredInstancePort(instance, xrayInstanceMetricsPortBase, true)
+
+	listeners := []net.Listener{
+		mustListen(t, fmt.Sprintf(":%d", preferredWebPort)),
+		mustListen(t, fmt.Sprintf(":%d", preferredSubPort)),
+		mustListen(t, fmt.Sprintf("127.0.0.1:%d", preferredAPIPort)),
+		mustListen(t, fmt.Sprintf("127.0.0.1:%d", preferredMetricsPort)),
+	}
+	for _, listener := range listeners {
+		defer listener.Close()
+	}
+
+	webPort, subPort, apiPort, metricsPort := defaultPortsForInstance(instance)
+	if webPort == preferredWebPort {
+		t.Fatalf("web port should retreat from busy preferred port %d", preferredWebPort)
+	}
+	if subPort == preferredSubPort {
+		t.Fatalf("sub port should retreat from busy preferred port %d", preferredSubPort)
+	}
+	if apiPort == preferredAPIPort {
+		t.Fatalf("api port should retreat from busy preferred port %d", preferredAPIPort)
+	}
+	if metricsPort == preferredMetricsPort {
+		t.Fatalf("metrics port should retreat from busy preferred port %d", preferredMetricsPort)
+	}
+}
+
+func mustListen(t *testing.T, address string) net.Listener {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("listen %s: %v", address, err)
+	}
+	return listener
 }

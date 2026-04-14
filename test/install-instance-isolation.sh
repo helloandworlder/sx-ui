@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_SH="${ROOT_DIR}/install.sh"
+UPDATE_SH="${ROOT_DIR}/update.sh"
 
 assert_eq() {
   local expected="$1"
@@ -93,6 +94,20 @@ test_explicit_busy_port_fails() {
   fi
 }
 
+test_update_prefers_free_xray_port_when_existing_is_busy() {
+  local selected
+  selected="$(
+    # shellcheck source=/dev/null
+    source "${UPDATE_SH}"
+    is_port_in_use() {
+      [[ "$1" == "39123" ]]
+    }
+    choose_existing_or_free_port "xrayApiPort" "39123" 39123 39125
+  )"
+
+  assert_eq "39124" "${selected}" "update should retreat from a busy existing xray api port"
+}
+
 test_main_does_not_forward_empty_version() {
   local captured_call=""
 
@@ -168,6 +183,7 @@ test_source_is_safe_and_defaults_to_isolated_instance_layout
 test_legacy_shared_runtime_layout_is_rejected
 test_auto_port_selection_skips_busy_ports
 test_explicit_busy_port_fails
+test_update_prefers_free_xray_port_when_existing_is_busy
 test_main_does_not_forward_empty_version
 test_save_db_setting_updates_without_unique_constraint
 test_configure_sxui_node_writes_to_node_meta_table

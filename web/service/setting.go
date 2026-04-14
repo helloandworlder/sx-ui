@@ -27,6 +27,8 @@ import (
 var xrayTemplateConfig string
 
 const (
+	webInstancePortBase         = 10000
+	subInstancePortBase         = 20000
 	xrayInstanceAPIPortBase     = 30000
 	xrayInstanceMetricsPortBase = 40000
 	xrayInstancePortSpan        = 10000
@@ -36,7 +38,7 @@ var defaultValueMap = map[string]string{
 	"xrayTemplateConfig":          xrayTemplateConfig,
 	"webListen":                   "",
 	"webDomain":                   "",
-	"webPort":                     "2053",
+	"webPort":                     "",
 	"webCertFile":                 "",
 	"webKeyFile":                  "",
 	"secret":                      random.Seq(32),
@@ -68,7 +70,7 @@ var defaultValueMap = map[string]string{
 	"subEnableRouting":            "true",
 	"subRoutingRules":             "",
 	"subListen":                   "",
-	"subPort":                     "2096",
+	"subPort":                     "",
 	"subPath":                     "/sub/",
 	"subDomain":                   "",
 	"subCertFile":                 "",
@@ -191,7 +193,12 @@ func (s *SettingService) GetAllSetting() (*entity.AllSetting, error) {
 		if keyMap[key] {
 			continue
 		}
-		err := setSetting(key, value)
+		var err error
+		value, err = defaultSettingValue(key)
+		if err != nil {
+			return nil, err
+		}
+		err = setSetting(key, value)
 		if err != nil {
 			return nil, err
 		}
@@ -239,14 +246,7 @@ func (s *SettingService) saveSetting(key string, value string) error {
 func (s *SettingService) getString(key string) (string, error) {
 	setting, err := s.getSetting(key)
 	if database.IsNotFound(err) {
-		if key == "xrayTemplateConfig" {
-			return buildInstanceScopedXrayTemplateConfig(currentXUIInstance()), nil
-		}
-		value, ok := defaultValueMap[key]
-		if !ok {
-			return "", common.NewErrorf("key <%v> not in defaultValueMap", key)
-		}
-		return value, nil
+		return defaultSettingValue(key)
 	} else if err != nil {
 		return "", err
 	}
@@ -293,11 +293,75 @@ func currentXUIInstance() string {
 	return instance
 }
 
-func defaultXrayInternalPorts(instance string) (int, int) {
+func instancePortOffset(instance string) int {
 	hasher := fnv.New32a()
 	_, _ = hasher.Write([]byte(strings.TrimSpace(instance)))
-	sum := int(hasher.Sum32() % xrayInstancePortSpan)
-	return xrayInstanceAPIPortBase + sum, xrayInstanceMetricsPortBase + sum
+	return int(hasher.Sum32() % xrayInstancePortSpan)
+}
+
+func preferredInstancePort(instance string, base int, localOnly bool) int {
+	_ = localOnly
+	return base + instancePortOffset(instance)
+}
+
+func isPortAvailable(port int, localOnly bool) bool {
+	address := fmt.Sprintf(":%d", port)
+	if localOnly {
+		address = fmt.Sprintf("127.0.0.1:%d", port)
+	}
+
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
+
+func chooseAvailableInstancePort(instance string, base int, localOnly bool) int {
+	preferred := preferredInstancePort(instance, base, localOnly)
+	for offset := 0; offset < xrayInstancePortSpan; offset++ {
+		port := base + ((preferred-base+offset)%xrayInstancePortSpan)
+		if isPortAvailable(port, localOnly) {
+			return port
+		}
+	}
+	return preferred
+}
+
+func defaultPortsForInstance(instance string) (int, int, int, int) {
+	return chooseAvailableInstancePort(instance, webInstancePortBase, false),
+		chooseAvailableInstancePort(instance, subInstancePortBase, false),
+		chooseAvailableInstancePort(instance, xrayInstanceAPIPortBase, true),
+		chooseAvailableInstancePort(instance, xrayInstanceMetricsPortBase, true)
+}
+
+func defaultXrayInternalPorts(instance string) (int, int) {
+	_, _, apiPort, metricsPort := defaultPortsForInstance(instance)
+	return apiPort, metricsPort
+}
+
+func defaultSettingValue(key string) (string, error) {
+	instance := currentXUIInstance()
+	webPort, subPort, apiPort, metricsPort := defaultPortsForInstance(instance)
+	switch key {
+	case "webPort":
+		return strconv.Itoa(webPort), nil
+	case "subPort":
+		return strconv.Itoa(subPort), nil
+	case "xrayTemplateConfig":
+		template, err := setXrayInternalPortsOnTemplate(xrayTemplateConfig, apiPort, metricsPort)
+		if err != nil {
+			return "", err
+		}
+		return template, nil
+	}
+
+	value, ok := defaultValueMap[key]
+	if !ok {
+		return "", common.NewErrorf("key <%v> not in defaultValueMap", key)
+	}
+	return value, nil
 }
 
 func buildInstanceScopedXrayTemplateConfig(instance string) string {

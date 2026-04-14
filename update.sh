@@ -16,6 +16,8 @@ GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/
 xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
+xui_requested_panel_port="${XUI_WEB_PORT:-}"
+xui_requested_sub_port="${XUI_SUB_PORT:-}"
 xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
 xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 update_version="${XUI_VERSION:-}"
@@ -39,6 +41,25 @@ sql_quote() {
     printf "%s" "$1" | sed "s/'/''/g"
 }
 
+require_sqlite3() {
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        _fail "ERROR: sqlite3 is required for per-instance setting management"
+    fi
+}
+
+save_db_setting() {
+    local key="$1"
+    local value="$2"
+    local db_path="${xui_db_folder}/x-ui.db"
+    local escaped_key
+    local escaped_value
+
+    require_sqlite3
+    escaped_key="$(sql_quote "${key}")"
+    escaped_value="$(sql_quote "${value}")"
+    sqlite3 "${db_path}" "DELETE FROM settings WHERE key = '${escaped_key}'; INSERT INTO settings (key, value) VALUES ('${escaped_key}', '${escaped_value}');"
+}
+
 # Fail, log and exit script function
 _fail() {
     local msg=${1}
@@ -59,6 +80,16 @@ parse_cli_args() {
                 update_version="$2"
                 shift 2
                 ;;
+            --panel-port|--web-port)
+                [[ $# -ge 2 ]] || _fail "Missing value for $1"
+                xui_requested_panel_port="$2"
+                shift 2
+                ;;
+            --sub-port)
+                [[ $# -ge 2 ]] || _fail "Missing value for $1"
+                xui_requested_sub_port="$2"
+                shift 2
+                ;;
             --xray-api-port)
                 [[ $# -ge 2 ]] || _fail "Missing value for $1"
                 xui_requested_xray_api_port="$2"
@@ -75,6 +106,8 @@ Usage: update.sh [--instance <name>] [--version <tag>]
 
 Environment variables:
   XUI_INSTANCE   Instance name (default: main)
+  XUI_WEB_PORT   Panel listen port
+  XUI_SUB_PORT   Subscription server port
   XUI_XRAY_API_PORT      Xray internal gRPC API port
   XUI_XRAY_METRICS_PORT  Xray internal metrics port
   XUI_VERSION    Release tag, e.g. v2.9.3
@@ -267,6 +300,13 @@ is_valid_port() {
     (( port >= 1 && port <= 65535 ))
 }
 
+is_port_in_range() {
+    local port="$1"
+    local start_port="$2"
+    local end_port="$3"
+    (( port >= start_port && port <= end_port ))
+}
+
 find_free_port() {
     local start_port="$1"
     local end_port="$2"
@@ -311,6 +351,18 @@ read_xray_api_port() {
     sqlite3 "${db_path}" "SELECT json_extract(value, '\$.inbounds[0].port') FROM settings WHERE key = 'xrayTemplateConfig' LIMIT 1;" 2>/dev/null
 }
 
+read_web_port() {
+    if [[ -x "${xui_folder}/x-ui" ]]; then
+        "${xui_folder}/x-ui" setting -show true 2>/dev/null | awk '/port:/ {print $2; exit}'
+    fi
+}
+
+read_sub_port() {
+    local db_path="${xui_db_folder}/x-ui.db"
+    [[ -f "${db_path}" ]] || return 0
+    sqlite3 "${db_path}" "SELECT value FROM settings WHERE key = 'subPort' LIMIT 1;" 2>/dev/null
+}
+
 read_xray_metrics_port() {
     local db_path="${xui_db_folder}/x-ui.db"
     [[ -f "${db_path}" ]] || return 0
@@ -327,7 +379,7 @@ choose_existing_or_free_port() {
     local end_port="$4"
 
     if [[ -n "${existing}" ]]; then
-        if is_valid_port "${existing}" && ! is_port_in_use "${existing}"; then
+        if is_valid_port "${existing}" && is_port_in_range "${existing}" "${start_port}" "${end_port}" && ! is_port_in_use "${existing}"; then
             echo "${existing}"
             return 0
         fi
@@ -1094,18 +1146,30 @@ update_x-ui() {
     mkdir -p "${xui_db_folder}" >/dev/null 2>&1
     write_instance_env
 
+    local requested_panel_port
+    local requested_sub_port
+    local config_panel_port
+    local config_sub_port
     local requested_xray_api_port
     local requested_xray_metrics_port
     local config_xray_api_port
     local config_xray_metrics_port
+    requested_panel_port="${xui_requested_panel_port:-$(read_web_port)}"
+    requested_sub_port="${xui_requested_sub_port:-$(read_sub_port)}"
     requested_xray_api_port="${xui_requested_xray_api_port:-$(read_xray_api_port)}"
     requested_xray_metrics_port="${xui_requested_xray_metrics_port:-$(read_xray_metrics_port)}"
+    config_panel_port="$(choose_existing_or_free_port "panelPort" "${requested_panel_port}" 10000 19999)"
+    config_sub_port="$(choose_existing_or_free_port "subPort" "${requested_sub_port}" 20000 29999)"
+    if [[ "${config_panel_port}" == "${config_sub_port}" ]]; then
+        _fail "subPort must differ from panelPort (${config_panel_port})"
+    fi
     config_xray_api_port="$(choose_existing_or_free_port "xrayApiPort" "${requested_xray_api_port}" 30000 39999)"
     config_xray_metrics_port="$(choose_existing_or_free_port "xrayMetricsPort" "${requested_xray_metrics_port}" 40000 49999)"
     if [[ "${config_xray_api_port}" == "${config_xray_metrics_port}" ]]; then
         _fail "xrayMetricsPort must differ from xrayApiPort (${config_xray_api_port})"
     fi
-    "${xui_folder}/x-ui" setting -xrayApiPort "${config_xray_api_port}" -xrayMetricsPort "${config_xray_metrics_port}" >/dev/null 2>&1
+    "${xui_folder}/x-ui" setting -port "${config_panel_port}" -xrayApiPort "${config_xray_api_port}" -xrayMetricsPort "${config_xray_metrics_port}" >/dev/null 2>&1
+    save_db_setting "subPort" "${config_sub_port}"
 
     echo -e "${green}Changing owner...${plain}"
     chown -R root:root ${xui_folder} >/dev/null 2>&1
