@@ -255,7 +255,7 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime stri
 }
 
 // updateSetting updates various panel settings including port, credentials, base path, listen IP, and two-factor authentication.
-func updateSetting(port int, username string, password string, webBasePath string, listenIP string, resetTwoFactor bool) {
+func updateSetting(port int, username string, password string, webBasePath string, listenIP string, resetTwoFactor bool, xrayAPIInternalPort int, xrayMetricsPort int) {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println("Database initialization failed:", err)
@@ -309,6 +309,19 @@ func updateSetting(port int, username string, password string, webBasePath strin
 			fmt.Println("Failed to set listen IP:", err)
 		} else {
 			fmt.Printf("listen %v set successfully", listenIP)
+		}
+	}
+
+	if xrayAPIInternalPort > 0 || xrayMetricsPort > 0 {
+		if xrayAPIInternalPort <= 0 || xrayMetricsPort <= 0 {
+			fmt.Println("Both xrayApiPort and xrayMetricsPort must be provided together")
+			return
+		}
+		err := settingService.SetXrayTemplateInternalPorts(xrayAPIInternalPort, xrayMetricsPort)
+		if err != nil {
+			fmt.Println("Failed to set Xray internal ports:", err)
+		} else {
+			fmt.Printf("Xray internal ports set successfully: api=%d metrics=%d\n", xrayAPIInternalPort, xrayMetricsPort)
 		}
 	}
 }
@@ -431,6 +444,8 @@ func main() {
 	var show bool
 	var getCert bool
 	var resetTwoFactor bool
+	var xrayAPIInternalPort int
+	var xrayMetricsPort int
 	settingCmd.BoolVar(&reset, "reset", false, "Reset all settings")
 	settingCmd.BoolVar(&show, "show", false, "Display current settings")
 	settingCmd.IntVar(&port, "port", 0, "Set panel port number")
@@ -447,6 +462,8 @@ func main() {
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "Set cron time for Telegram bot notifications")
 	settingCmd.StringVar(&tgbotchatid, "tgbotchatid", "", "Set chat ID for Telegram bot notifications")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "Enable notifications via Telegram bot")
+	settingCmd.IntVar(&xrayAPIInternalPort, "xrayApiPort", 0, "Set Xray internal gRPC API port")
+	settingCmd.IntVar(&xrayMetricsPort, "xrayMetricsPort", 0, "Set Xray internal metrics port")
 
 	oldUsage := flag.Usage
 	flag.Usage = func() {
@@ -483,7 +500,7 @@ func main() {
 		if reset {
 			resetSetting()
 		} else {
-			updateSetting(port, username, password, webBasePath, listenIP, resetTwoFactor)
+			updateSetting(port, username, password, webBasePath, listenIP, resetTwoFactor, xrayAPIInternalPort, xrayMetricsPort)
 		}
 		if show {
 			showSetting(show)

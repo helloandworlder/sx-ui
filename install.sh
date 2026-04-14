@@ -20,6 +20,8 @@ xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
 xui_requested_panel_port="${XUI_WEB_PORT:-}"
 xui_requested_sub_port="${XUI_SUB_PORT:-}"
+xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
+xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 install_version="${XUI_VERSION:-}"
 
 parse_cli_args() {
@@ -40,6 +42,16 @@ parse_cli_args() {
                 xui_requested_sub_port="$2"
                 shift 2
                 ;;
+            --xray-api-port)
+                [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
+                xui_requested_xray_api_port="$2"
+                shift 2
+                ;;
+            --xray-metrics-port)
+                [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
+                xui_requested_xray_metrics_port="$2"
+                shift 2
+                ;;
             --version)
                 [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
                 install_version="$2"
@@ -53,6 +65,8 @@ Environment variables:
   XUI_INSTANCE   Instance name (default: main)
   XUI_WEB_PORT   Panel listen port
   XUI_SUB_PORT   Subscription server port
+  XUI_XRAY_API_PORT      Xray internal gRPC API port
+  XUI_XRAY_METRICS_PORT  Xray internal metrics port
   XUI_VERSION    Release tag, e.g. v2.9.3
 EOF
                 exit 0
@@ -251,12 +265,50 @@ require_sqlite3() {
     fi
 }
 
+sql_quote() {
+    printf "%s" "$1" | sed "s/'/''/g"
+}
+
 save_db_setting() {
     local key="$1"
     local value="$2"
     local db_path="${xui_db_folder}/x-ui.db"
     require_sqlite3
-    sqlite3 "${db_path}" "INSERT INTO settings (key, value) VALUES ('${key}', '${value}') ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+    local escaped_key
+    local escaped_value
+    escaped_key="$(sql_quote "${key}")"
+    escaped_value="$(sql_quote "${value}")"
+    sqlite3 "${db_path}" "DELETE FROM settings WHERE key = '${escaped_key}'; INSERT INTO settings (key, value) VALUES ('${escaped_key}', '${escaped_value}');"
+}
+
+db_table_exists() {
+    local db_path="$1"
+    local table_name="$2"
+    sqlite3 "${db_path}" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$(sql_quote "${table_name}")' LIMIT 1;" 2>/dev/null | grep -q '^1$'
+}
+
+save_node_meta_setting() {
+    local key="$1"
+    local value="$2"
+    local db_path="${xui_db_folder}/x-ui.db"
+    local table_name=""
+
+    require_sqlite3
+
+    if db_table_exists "${db_path}" "node_meta"; then
+        table_name="node_meta"
+    elif db_table_exists "${db_path}" "node_metas"; then
+        table_name="node_metas"
+    else
+        echo -e "${yellow}Node metadata table not found, skipping ${key}${plain}"
+        return 0
+    fi
+
+    local escaped_key
+    local escaped_value
+    escaped_key="$(sql_quote "${key}")"
+    escaped_value="$(sql_quote "${value}")"
+    sqlite3 "${db_path}" "DELETE FROM ${table_name} WHERE key = '${escaped_key}'; INSERT INTO ${table_name} (key, value) VALUES ('${escaped_key}', '${escaped_value}');"
 }
 
 install_base() {
@@ -872,9 +924,9 @@ configure_sxui_node() {
     # Write to database via x-ui CLI (or sqlite3 directly)
     local db_path="${xui_db_folder}/x-ui.db"
     if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$db_path" ]]; then
-        sqlite3 "$db_path" "INSERT OR REPLACE INTO node_metas (key, value) VALUES ('api_key', '${api_key}');"
-        sqlite3 "$db_path" "INSERT OR REPLACE INTO node_metas (key, value) VALUES ('node_type', '${node_type}');"
-        sqlite3 "$db_path" "INSERT OR REPLACE INTO node_metas (key, value) VALUES ('geoip_block_cn', '${geoip_block}');"
+        save_node_meta_setting "api_key" "${api_key}"
+        save_node_meta_setting "node_type" "${node_type}"
+        save_node_meta_setting "geoip_block_cn" "${geoip_block}"
     else
         echo -e "${yellow}sqlite3 not found, node meta will be set on first API call${plain}"
     fi
@@ -978,7 +1030,18 @@ config_after_install() {
             fi
             echo -e "${yellow}Selected sub server port: ${config_sub_port}${plain}"
 
-            ${xui_folder}/x-ui setting -username "${config_username}" -password "${config_password}" -port "${config_port}" -webBasePath "${config_webBasePath}"
+            local config_xray_api_port
+            config_xray_api_port="$(resolve_port_choice "xrayApiPort" "${xui_requested_xray_api_port}" 30000 39999)"
+            local config_xray_metrics_port
+            config_xray_metrics_port="$(resolve_port_choice "xrayMetricsPort" "${xui_requested_xray_metrics_port}" 40000 49999)"
+            if [[ "${config_xray_api_port}" == "${config_xray_metrics_port}" ]]; then
+                echo -e "${red}xrayMetricsPort must differ from xrayApiPort (${config_xray_api_port})${plain}"
+                exit 1
+            fi
+            echo -e "${yellow}Selected Xray API port: ${config_xray_api_port}${plain}"
+            echo -e "${yellow}Selected Xray metrics port: ${config_xray_metrics_port}${plain}"
+
+            ${xui_folder}/x-ui setting -username "${config_username}" -password "${config_password}" -port "${config_port}" -webBasePath "${config_webBasePath}" -xrayApiPort "${config_xray_api_port}" -xrayMetricsPort "${config_xray_metrics_port}"
             ${xui_folder}/x-ui migrate
             save_db_setting "subPort" "${config_sub_port}"
             
@@ -1001,6 +1064,8 @@ config_after_install() {
             echo -e "${green}Password:    ${config_password}${plain}"
             echo -e "${green}Port:        ${config_port}${plain}"
             echo -e "${green}SubPort:     ${config_sub_port}${plain}"
+            echo -e "${green}XrayAPI:     ${config_xray_api_port}${plain}"
+            echo -e "${green}XrayMetrics: ${config_xray_metrics_port}${plain}"
             echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
             echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
             echo -e "${green}Service:     ${xui_service_name}${plain}"

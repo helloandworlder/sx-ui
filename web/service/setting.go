@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -23,6 +25,12 @@ import (
 
 //go:embed config.json
 var xrayTemplateConfig string
+
+const (
+	xrayInstanceAPIPortBase     = 30000
+	xrayInstanceMetricsPortBase = 40000
+	xrayInstancePortSpan        = 10000
+)
 
 var defaultValueMap = map[string]string{
 	"xrayTemplateConfig":          xrayTemplateConfig,
@@ -110,7 +118,7 @@ type SettingService struct{}
 
 func (s *SettingService) GetDefaultJSONConfig() (any, error) {
 	var jsonData any
-	err := json.Unmarshal([]byte(xrayTemplateConfig), &jsonData)
+	err := json.Unmarshal([]byte(buildInstanceScopedXrayTemplateConfig(currentXUIInstance())), &jsonData)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +239,9 @@ func (s *SettingService) saveSetting(key string, value string) error {
 func (s *SettingService) getString(key string) (string, error) {
 	setting, err := s.getSetting(key)
 	if database.IsNotFound(err) {
+		if key == "xrayTemplateConfig" {
+			return buildInstanceScopedXrayTemplateConfig(currentXUIInstance()), nil
+		}
 		value, ok := defaultValueMap[key]
 		if !ok {
 			return "", common.NewErrorf("key <%v> not in defaultValueMap", key)
@@ -272,6 +283,94 @@ func (s *SettingService) setInt(key string, value int) error {
 
 func (s *SettingService) GetXrayConfigTemplate() (string, error) {
 	return s.getString("xrayTemplateConfig")
+}
+
+func currentXUIInstance() string {
+	instance := strings.TrimSpace(os.Getenv("XUI_INSTANCE"))
+	if instance == "" {
+		return "main"
+	}
+	return instance
+}
+
+func defaultXrayInternalPorts(instance string) (int, int) {
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(strings.TrimSpace(instance)))
+	sum := int(hasher.Sum32() % xrayInstancePortSpan)
+	return xrayInstanceAPIPortBase + sum, xrayInstanceMetricsPortBase + sum
+}
+
+func buildInstanceScopedXrayTemplateConfig(instance string) string {
+	apiPort, metricsPort := defaultXrayInternalPorts(instance)
+	template, err := setXrayInternalPortsOnTemplate(xrayTemplateConfig, apiPort, metricsPort)
+	if err != nil {
+		return xrayTemplateConfig
+	}
+	return template
+}
+
+func setXrayInternalPortsOnTemplate(template string, apiPort int, metricsPort int) (string, error) {
+	if apiPort < 1 || apiPort > 65535 {
+		return "", fmt.Errorf("invalid xray api port: %d", apiPort)
+	}
+	if metricsPort < 1 || metricsPort > 65535 {
+		return "", fmt.Errorf("invalid xray metrics port: %d", metricsPort)
+	}
+	if apiPort == metricsPort {
+		return "", fmt.Errorf("xray api port and metrics port must differ")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(template), &payload); err != nil {
+		return "", err
+	}
+
+	inbounds, ok := payload["inbounds"].([]any)
+	if !ok {
+		return "", fmt.Errorf("xray template is missing inbounds")
+	}
+
+	foundAPIInbound := false
+	for _, rawInbound := range inbounds {
+		inbound, ok := rawInbound.(map[string]any)
+		if !ok {
+			continue
+		}
+		tag, _ := inbound["tag"].(string)
+		if tag != "api" {
+			continue
+		}
+		inbound["port"] = apiPort
+		foundAPIInbound = true
+		break
+	}
+	if !foundAPIInbound {
+		return "", fmt.Errorf("xray template is missing api inbound")
+	}
+
+	metrics, ok := payload["metrics"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("xray template is missing metrics config")
+	}
+	metrics["listen"] = fmt.Sprintf("127.0.0.1:%d", metricsPort)
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (s *SettingService) SetXrayTemplateInternalPorts(apiPort int, metricsPort int) error {
+	template, err := s.GetXrayConfigTemplate()
+	if err != nil {
+		return err
+	}
+	updatedTemplate, err := setXrayInternalPortsOnTemplate(template, apiPort, metricsPort)
+	if err != nil {
+		return err
+	}
+	return s.saveSetting("xrayTemplateConfig", updatedTemplate)
 }
 
 func (s *SettingService) GetXrayOutboundTestUrl() (string, error) {
@@ -711,7 +810,7 @@ func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting) error {
 
 func (s *SettingService) GetDefaultXrayConfig() (any, error) {
 	var jsonData any
-	err := json.Unmarshal([]byte(xrayTemplateConfig), &jsonData)
+	err := json.Unmarshal([]byte(buildInstanceScopedXrayTemplateConfig(currentXUIInstance())), &jsonData)
 	if err != nil {
 		return nil, err
 	}

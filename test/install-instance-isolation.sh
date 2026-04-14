@@ -117,10 +117,59 @@ test_main_does_not_forward_empty_version() {
   assert_eq "no-args" "${captured_call}" "main should call install_x-ui without an empty version argument"
 }
 
+test_save_db_setting_updates_without_unique_constraint() {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local db_path="${tmpdir}/x-ui.db"
+
+  sqlite3 "${db_path}" "CREATE TABLE settings (id integer PRIMARY KEY AUTOINCREMENT, key text, value text);"
+
+  xui_db_folder="${tmpdir}"
+  save_db_setting "subPort" "20000"
+  save_db_setting "subPort" "20001"
+
+  local value
+  value="$(sqlite3 "${db_path}" "SELECT value FROM settings WHERE key = 'subPort';")"
+  local count
+  count="$(sqlite3 "${db_path}" "SELECT COUNT(*) FROM settings WHERE key = 'subPort';")"
+
+  assert_eq "20001" "${value}" "save_db_setting should persist the latest value"
+  assert_eq "1" "${count}" "save_db_setting should not duplicate rows without a unique index"
+}
+
+test_configure_sxui_node_writes_to_node_meta_table() {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local db_path="${tmpdir}/x-ui.db"
+
+  sqlite3 "${db_path}" "CREATE TABLE node_meta (id integer PRIMARY KEY AUTOINCREMENT, key text, value text); CREATE UNIQUE INDEX idx_node_meta_key ON node_meta(key);"
+
+  xui_db_folder="${tmpdir}"
+  xui_instance="hk01"
+  export SX_NODE_TYPE=dedicated
+  export SX_API_KEY=test-api-key
+  export SX_GEOIP_BLOCK_CN=false
+
+  configure_sxui_node >/dev/null
+
+  local api_key
+  api_key="$(sqlite3 "${db_path}" "SELECT value FROM node_meta WHERE key = 'api_key';")"
+  local node_type
+  node_type="$(sqlite3 "${db_path}" "SELECT value FROM node_meta WHERE key = 'node_type';")"
+  local geoip_block
+  geoip_block="$(sqlite3 "${db_path}" "SELECT value FROM node_meta WHERE key = 'geoip_block_cn';")"
+
+  assert_eq "test-api-key" "${api_key}" "configure_sxui_node should write api_key to node_meta"
+  assert_eq "dedicated" "${node_type}" "configure_sxui_node should write node_type to node_meta"
+  assert_eq "false" "${geoip_block}" "configure_sxui_node should write geoip_block_cn to node_meta"
+}
+
 test_source_is_safe_and_defaults_to_isolated_instance_layout
 test_legacy_shared_runtime_layout_is_rejected
 test_auto_port_selection_skips_busy_ports
 test_explicit_busy_port_fails
 test_main_does_not_forward_empty_version
+test_save_db_setting_updates_without_unique_constraint
+test_configure_sxui_node_writes_to_node_meta_table
 
 echo "install-instance-isolation: ok"

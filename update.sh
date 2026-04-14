@@ -16,6 +16,8 @@ GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/
 xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
+xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
+xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 update_version="${XUI_VERSION:-}"
 
 # Don't edit this config
@@ -31,6 +33,10 @@ script_name=$(basename "$0")
 # Check command exist function
 _command_exists() {
     type "$1" &>/dev/null
+}
+
+sql_quote() {
+    printf "%s" "$1" | sed "s/'/''/g"
 }
 
 # Fail, log and exit script function
@@ -53,12 +59,24 @@ parse_cli_args() {
                 update_version="$2"
                 shift 2
                 ;;
+            --xray-api-port)
+                [[ $# -ge 2 ]] || _fail "Missing value for $1"
+                xui_requested_xray_api_port="$2"
+                shift 2
+                ;;
+            --xray-metrics-port)
+                [[ $# -ge 2 ]] || _fail "Missing value for $1"
+                xui_requested_xray_metrics_port="$2"
+                shift 2
+                ;;
             --help|-h)
                 cat <<'EOF'
 Usage: update.sh [--instance <name>] [--version <tag>]
 
 Environment variables:
   XUI_INSTANCE   Instance name (default: main)
+  XUI_XRAY_API_PORT      Xray internal gRPC API port
+  XUI_XRAY_METRICS_PORT  Xray internal metrics port
   XUI_VERSION    Release tag, e.g. v2.9.3
 EOF
                 exit 0
@@ -241,6 +259,81 @@ is_port_in_use() {
         lsof -nP -iTCP:${port} -sTCP:LISTEN >/dev/null 2>&1 && return 0
     fi
     return 1
+}
+
+is_valid_port() {
+    local port="$1"
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 1
+    (( port >= 1 && port <= 65535 ))
+}
+
+find_free_port() {
+    local start_port="$1"
+    local end_port="$2"
+    local port
+    for ((port = start_port; port <= end_port; port++)); do
+        if ! is_port_in_use "${port}"; then
+            echo "${port}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+resolve_port_choice() {
+    local label="$1"
+    local requested="$2"
+    local start_port="$3"
+    local end_port="$4"
+
+    if [[ -n "${requested}" ]]; then
+        if ! is_valid_port "${requested}"; then
+            echo -e "${red}Invalid ${label}: ${requested}${plain}" >&2
+            return 1
+        fi
+        if is_port_in_use "${requested}"; then
+            echo -e "${red}${label} already in use: ${requested}${plain}" >&2
+            return 1
+        fi
+        echo "${requested}"
+        return 0
+    fi
+
+    find_free_port "${start_port}" "${end_port}" || {
+        echo -e "${red}Failed to find available ${label} in range ${start_port}-${end_port}${plain}" >&2
+        return 1
+    }
+}
+
+read_xray_api_port() {
+    local db_path="${xui_db_folder}/x-ui.db"
+    [[ -f "${db_path}" ]] || return 0
+    sqlite3 "${db_path}" "SELECT json_extract(value, '\$.inbounds[0].port') FROM settings WHERE key = 'xrayTemplateConfig' LIMIT 1;" 2>/dev/null
+}
+
+read_xray_metrics_port() {
+    local db_path="${xui_db_folder}/x-ui.db"
+    [[ -f "${db_path}" ]] || return 0
+    local listen_value
+    listen_value="$(sqlite3 "${db_path}" "SELECT json_extract(value, '\$.metrics.listen') FROM settings WHERE key = 'xrayTemplateConfig' LIMIT 1;" 2>/dev/null)"
+    [[ -n "${listen_value}" ]] || return 0
+    echo "${listen_value##*:}"
+}
+
+choose_existing_or_free_port() {
+    local label="$1"
+    local existing="$2"
+    local start_port="$3"
+    local end_port="$4"
+
+    if [[ -n "${existing}" ]]; then
+        if is_valid_port "${existing}" && ! is_port_in_use "${existing}"; then
+            echo "${existing}"
+            return 0
+        fi
+    fi
+
+    resolve_port_choice "${label}" "" "${start_port}" "${end_port}"
 }
 
 gen_random_string() {
@@ -1000,7 +1093,20 @@ update_x-ui() {
     mkdir -p "${xui_log_folder}" >/dev/null 2>&1
     mkdir -p "${xui_db_folder}" >/dev/null 2>&1
     write_instance_env
-    
+
+    local requested_xray_api_port
+    local requested_xray_metrics_port
+    local config_xray_api_port
+    local config_xray_metrics_port
+    requested_xray_api_port="${xui_requested_xray_api_port:-$(read_xray_api_port)}"
+    requested_xray_metrics_port="${xui_requested_xray_metrics_port:-$(read_xray_metrics_port)}"
+    config_xray_api_port="$(choose_existing_or_free_port "xrayApiPort" "${requested_xray_api_port}" 30000 39999)"
+    config_xray_metrics_port="$(choose_existing_or_free_port "xrayMetricsPort" "${requested_xray_metrics_port}" 40000 49999)"
+    if [[ "${config_xray_api_port}" == "${config_xray_metrics_port}" ]]; then
+        _fail "xrayMetricsPort must differ from xrayApiPort (${config_xray_api_port})"
+    fi
+    "${xui_folder}/x-ui" setting -xrayApiPort "${config_xray_api_port}" -xrayMetricsPort "${config_xray_metrics_port}" >/dev/null 2>&1
+
     echo -e "${green}Changing owner...${plain}"
     chown -R root:root ${xui_folder} >/dev/null 2>&1
     
