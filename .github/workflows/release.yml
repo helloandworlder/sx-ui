@@ -4,10 +4,71 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag, e.g. v2.9.4"
+        required: true
+        type: string
+      publish_latest:
+        description: "Mark release artifacts and image as latest"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: sx-ui-release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.vars.outputs.release_version }}
+      publish_latest: ${{ steps.vars.outputs.publish_latest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: vars
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+            publish_latest="${{ inputs.publish_latest }}"
+          else
+            version="${{ github.ref_name }}"
+            publish_latest="true"
+          fi
+
+          if [[ ! "${version}" =~ ^v[0-9]+(\.[0-9]+){1,2}([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: ${version}" >&2
+            exit 1
+          fi
+
+          echo "release_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "publish_latest=${publish_latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag for manual releases
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_VERSION: ${{ steps.vars.outputs.release_version }}
+        run: |
+          if git rev-parse "${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "Tag already exists: ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${RELEASE_VERSION}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${RELEASE_VERSION}"
 
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -64,10 +125,8 @@ jobs:
             sx-ui-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
 
   docker:
+    needs: prepare
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,8 +146,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/sx-ui
           tags: |
-            type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=${{ needs.prepare.outputs.release_version }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.publish_latest == 'true' }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -102,10 +161,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=sx-ui
 
   release:
-    needs: [build, docker]
+    needs: [prepare, build, docker]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -116,6 +173,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.release_version }}
           generate_release_notes: true
           files: |
             artifacts/sx-ui-linux-amd64/*
@@ -126,11 +184,19 @@ jobs:
             ```bash
             GITHUB_OWNER=${{ github.repository_owner }} \
             GITHUB_REPO=${{ github.event.repository.name }} \
-            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/main/install.sh)
+            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/main/install.sh) --instance main
+            ```
+
+            ## Install specific instance
+
+            ```bash
+            GITHUB_OWNER=${{ github.repository_owner }} \
+            GITHUB_REPO=${{ github.event.repository.name }} \
+            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/main/install.sh) --instance hk01
             ```
 
             ## Docker Image
 
             ```bash
-            docker pull ghcr.io/${{ github.repository_owner }}/sx-ui:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository_owner }}/sx-ui:${{ needs.prepare.outputs.release_version }}
             ```

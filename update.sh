@@ -16,6 +16,7 @@ GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/
 xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
+update_version="${XUI_VERSION:-}"
 
 # Don't edit this config
 b_source="${BASH_SOURCE[0]}"
@@ -37,6 +38,44 @@ _fail() {
     local msg=${1}
     echo -e "${red}${msg}${plain}"
     exit 2
+}
+
+parse_cli_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --instance|-i)
+                [[ $# -ge 2 ]] || _fail "Missing value for $1"
+                xui_instance="$2"
+                shift 2
+                ;;
+            --version)
+                [[ $# -ge 2 ]] || _fail "Missing value for $1"
+                update_version="$2"
+                shift 2
+                ;;
+            --help|-h)
+                cat <<'EOF'
+Usage: update.sh [--instance <name>] [--version <tag>]
+
+Environment variables:
+  XUI_INSTANCE   Instance name (default: main)
+  XUI_VERSION    Release tag, e.g. v2.9.3
+EOF
+                exit 0
+                ;;
+            --*)
+                _fail "Unknown option: $1"
+                ;;
+            *)
+                if [[ -z "${update_version}" ]]; then
+                    update_version="$1"
+                    shift
+                    continue
+                fi
+                _fail "Unexpected argument: $1"
+                ;;
+        esac
+    done
 }
 
 prompt_instance_name() {
@@ -70,8 +109,18 @@ apply_instance_paths() {
     export XUI_BIN_FOLDER="${xui_folder}/bin"
 }
 
-prompt_instance_name
-apply_instance_paths
+ensure_isolated_instance_layout() {
+    local normalized_folder="${xui_folder%/}"
+    if [[ "${normalized_folder}" == "/usr/local/x-ui" || "${normalized_folder}" == /usr/local/x-ui/* ]]; then
+        _fail "Refusing to update sx-ui instance in legacy x-ui runtime path: ${normalized_folder}"
+    fi
+    if [[ "${xui_service_name}" == "x-ui" ]]; then
+        _fail "Refusing to use legacy service name x-ui for sx-ui instances"
+    fi
+    if [[ "${xui_env_file}" == "/etc/default/x-ui" ]]; then
+        _fail "Refusing to reuse legacy env file /etc/default/x-ui"
+    fi
+}
 
 resolve_service_name() {
     if [[ -f "${xui_service}/${xui_service_name}.service" ]]; then
@@ -125,26 +174,30 @@ EOF
     chmod 644 "${xui_service}/${xui_service_name}.service" >/dev/null 2>&1
 }
 
-# check root
-[[ $EUID -ne 0 ]] && _fail "FATAL ERROR: Please run this script with root privilege."
+require_root() {
+    [[ $EUID -ne 0 ]] && _fail "FATAL ERROR: Please run this script with root privilege."
+}
 
-if _command_exists curl; then
-    curl_bin=$(which curl)
-else
-    _fail "ERROR: Command 'curl' not found."
-fi
+require_curl() {
+    if _command_exists curl; then
+        curl_bin=$(which curl)
+    else
+        _fail "ERROR: Command 'curl' not found."
+    fi
+}
 
-# Check OS and set release variable
-if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    release=$ID
+detect_release() {
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        release=$ID
     elif [[ -f /usr/lib/os-release ]]; then
-    source /usr/lib/os-release
-    release=$ID
-else
-    _fail "Failed to check the system OS, please contact the author!"
-fi
-echo "The OS release is: $release"
+        source /usr/lib/os-release
+        release=$ID
+    else
+        _fail "Failed to check the system OS, please contact the author!"
+    fi
+    echo "The OS release is: $release"
+}
 
 arch() {
     case "$(uname -m)" in
@@ -158,8 +211,6 @@ arch() {
         *) echo -e "${red}Unsupported CPU architecture!${plain}" && rm -f "${cur_dir}/${script_name}" >/dev/null 2>&1 && exit 2;;
     esac
 }
-
-echo "Arch: $(arch)"
 
 # Simple helpers
 is_ipv4() {
@@ -202,29 +253,29 @@ install_base() {
     echo -e "${green}Updating and install dependency packages...${plain}"
     case "${release}" in
         ubuntu | debian | armbian)
-            apt-get update >/dev/null 2>&1 && apt-get install -y -q curl tar tzdata socat >/dev/null 2>&1
+            apt-get update >/dev/null 2>&1 && apt-get install -y -q curl tar tzdata socat sqlite3 >/dev/null 2>&1
         ;;
         fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
-            dnf -y update >/dev/null 2>&1 && dnf install -y -q curl tar tzdata socat >/dev/null 2>&1
+            dnf -y update >/dev/null 2>&1 && dnf install -y -q curl tar tzdata socat sqlite >/dev/null 2>&1
         ;;
         centos)
             if [[ "${VERSION_ID}" =~ ^7 ]]; then
-                yum -y update >/dev/null 2>&1 && yum install -y -q curl tar tzdata socat >/dev/null 2>&1
+                yum -y update >/dev/null 2>&1 && yum install -y -q curl tar tzdata socat sqlite >/dev/null 2>&1
             else
-                dnf -y update >/dev/null 2>&1 && dnf install -y -q curl tar tzdata socat >/dev/null 2>&1
+                dnf -y update >/dev/null 2>&1 && dnf install -y -q curl tar tzdata socat sqlite >/dev/null 2>&1
             fi
         ;;
         arch | manjaro | parch)
-            pacman -Syu >/dev/null 2>&1 && pacman -Syu --noconfirm curl tar tzdata socat >/dev/null 2>&1
+            pacman -Syu >/dev/null 2>&1 && pacman -Syu --noconfirm curl tar tzdata socat sqlite >/dev/null 2>&1
         ;;
         opensuse-tumbleweed | opensuse-leap)
-            zypper refresh >/dev/null 2>&1 && zypper -q install -y curl tar timezone socat >/dev/null 2>&1
+            zypper refresh >/dev/null 2>&1 && zypper -q install -y curl tar timezone socat sqlite3 >/dev/null 2>&1
         ;;
         alpine)
-            apk update >/dev/null 2>&1 && apk add curl tar tzdata socat >/dev/null 2>&1
+            apk update >/dev/null 2>&1 && apk add curl tar tzdata socat sqlite >/dev/null 2>&1
         ;;
         *)
-            apt-get update >/dev/null 2>&1 && apt install -y -q curl tar tzdata socat >/dev/null 2>&1
+            apt-get update >/dev/null 2>&1 && apt install -y -q curl tar tzdata socat sqlite3 >/dev/null 2>&1
         ;;
     esac
 }
@@ -839,6 +890,7 @@ config_after_update() {
 }
 
 update_x-ui() {
+    local requested_version="${1:-}"
     local archive_name="sx-ui-linux-$(arch).tar.gz"
     local bundle_dir="sx-ui"
     local temp_dir
@@ -853,16 +905,21 @@ update_x-ui() {
     fi
     
     echo -e "${green}Downloading new sx-ui version...${plain}"
-    
-    tag_version=$(${curl_bin} -Ls "${GITHUB_RELEASE_API}" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    if [[ ! -n "$tag_version" ]]; then
-        echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-        tag_version=$(${curl_bin} -4 -Ls "${GITHUB_RELEASE_API}" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+    if [[ -n "${requested_version}" ]]; then
+        tag_version="${requested_version}"
+        echo -e "Using requested sx-ui version: ${tag_version}"
+    else
+        tag_version=$(${curl_bin} -Ls "${GITHUB_RELEASE_API}" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then
-            _fail "ERROR: Failed to fetch sx-ui version, it may be due to GitHub API restrictions, please try it later"
+            echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
+            tag_version=$(${curl_bin} -4 -Ls "${GITHUB_RELEASE_API}" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            if [[ ! -n "$tag_version" ]]; then
+                _fail "ERROR: Failed to fetch sx-ui version, it may be due to GitHub API restrictions, please try it later"
+            fi
         fi
+        echo -e "Got sx-ui latest version: ${tag_version}, beginning the installation..."
     fi
-    echo -e "Got sx-ui latest version: ${tag_version}, beginning the installation..."
     ${curl_bin} -fLRo "${temp_dir}/${archive_name}" "${GITHUB_RELEASE_DOWNLOAD_BASE}/${tag_version}/${archive_name}" 2>/dev/null
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
@@ -997,6 +1054,21 @@ update_x-ui() {
 └───────────────────────────────────────────────────────┘"
 }
 
-echo -e "${green}Running...${plain}"
-install_base
-update_x-ui $1
+main() {
+    parse_cli_args "$@"
+    prompt_instance_name
+    apply_instance_paths
+    ensure_isolated_instance_layout
+    require_root
+    require_curl
+    detect_release
+    echo "Arch: $(arch)"
+
+    echo -e "${green}Running...${plain}"
+    install_base
+    update_x-ui "${update_version}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

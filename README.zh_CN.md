@@ -28,6 +28,12 @@
 bash <(curl -Ls https://raw.githubusercontent.com/helloandworlder/sx-ui/main/install.sh)
 ```
 
+多实例安装示例：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/helloandworlder/sx-ui/main/install.sh) --instance hk01
+```
+
 完整文档请参阅 [项目Wiki](https://github.com/helloandworlder/sx-ui/wiki)。
 
 ## 特别感谢

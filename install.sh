@@ -18,6 +18,61 @@ cur_dir=$(pwd)
 xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
+xui_requested_panel_port="${XUI_WEB_PORT:-}"
+xui_requested_sub_port="${XUI_SUB_PORT:-}"
+install_version="${XUI_VERSION:-}"
+
+parse_cli_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --instance|-i)
+                [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
+                xui_instance="$2"
+                shift 2
+                ;;
+            --panel-port|--web-port)
+                [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
+                xui_requested_panel_port="$2"
+                shift 2
+                ;;
+            --sub-port)
+                [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
+                xui_requested_sub_port="$2"
+                shift 2
+                ;;
+            --version)
+                [[ $# -ge 2 ]] || { echo -e "${red}Missing value for $1${plain}"; exit 1; }
+                install_version="$2"
+                shift 2
+                ;;
+            --help|-h)
+                cat <<'EOF'
+Usage: install.sh [--instance <name>] [--panel-port <port>] [--sub-port <port>] [--version <tag>]
+
+Environment variables:
+  XUI_INSTANCE   Instance name (default: main)
+  XUI_WEB_PORT   Panel listen port
+  XUI_SUB_PORT   Subscription server port
+  XUI_VERSION    Release tag, e.g. v2.9.3
+EOF
+                exit 0
+                ;;
+            --*)
+                echo -e "${red}Unknown option: $1${plain}"
+                exit 1
+                ;;
+            *)
+                if [[ -z "${install_version}" ]]; then
+                    install_version="$1"
+                    shift
+                    continue
+                fi
+                echo -e "${red}Unexpected argument: $1${plain}"
+                exit 1
+                ;;
+        esac
+    done
+}
 
 prompt_instance_name() {
     if [[ -n "${xui_instance}" ]]; then
@@ -50,8 +105,22 @@ apply_instance_paths() {
     export XUI_BIN_FOLDER="${xui_folder}/bin"
 }
 
-prompt_instance_name
-apply_instance_paths
+ensure_isolated_instance_layout() {
+    local normalized_folder="${xui_folder%/}"
+    if [[ "${normalized_folder}" == "/usr/local/x-ui" || "${normalized_folder}" == /usr/local/x-ui/* ]]; then
+        echo -e "${red}Refusing to install sx-ui instance into legacy x-ui runtime path: ${normalized_folder}${plain}" >&2
+        return 1
+    fi
+    if [[ "${xui_service_name}" == "x-ui" ]]; then
+        echo -e "${red}Refusing to use legacy service name x-ui for sx-ui instances${plain}" >&2
+        return 1
+    fi
+    if [[ "${xui_env_file}" == "/etc/default/x-ui" ]]; then
+        echo -e "${red}Refusing to reuse legacy env file /etc/default/x-ui${plain}" >&2
+        return 1
+    fi
+    return 0
+}
 
 resolve_service_name() {
     if [[ -f "${xui_service}/${xui_service_name}.service" ]]; then
@@ -69,21 +138,23 @@ build_systemd_restart_cmd() {
     echo "systemctl restart $(resolve_service_name)"
 }
 
-# check root
-[[ $EUID -ne 0 ]] && echo -e "${red}Fatal error: ${plain} Please run this script with root privilege \n " && exit 1
+require_root() {
+    [[ $EUID -ne 0 ]] && echo -e "${red}Fatal error: ${plain} Please run this script with root privilege \n " && exit 1
+}
 
-# Check OS and set release variable
-if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    release=$ID
+detect_release() {
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        release=$ID
     elif [[ -f /usr/lib/os-release ]]; then
-    source /usr/lib/os-release
-    release=$ID
-else
-    echo "Failed to check the system OS, please contact the author!" >&2
-    exit 1
-fi
-echo "The OS release is: $release"
+        source /usr/lib/os-release
+        release=$ID
+    else
+        echo "Failed to check the system OS, please contact the author!" >&2
+        exit 1
+    fi
+    echo "The OS release is: $release"
+}
 
 arch() {
     case "$(uname -m)" in
@@ -97,8 +168,6 @@ arch() {
         *) echo -e "${green}Unsupported CPU architecture! ${plain}" && rm -f install.sh && exit 1 ;;
     esac
 }
-
-echo "Arch: $(arch)"
 
 # Simple helpers
 is_ipv4() {
@@ -131,32 +200,91 @@ is_port_in_use() {
     return 1
 }
 
+is_valid_port() {
+    local port="$1"
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 1
+    (( port >= 1 && port <= 65535 ))
+}
+
+find_free_port() {
+    local start_port="$1"
+    local end_port="$2"
+    local port
+    for ((port = start_port; port <= end_port; port++)); do
+        if ! is_port_in_use "${port}"; then
+            echo "${port}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+resolve_port_choice() {
+    local label="$1"
+    local requested="$2"
+    local start_port="$3"
+    local end_port="$4"
+
+    if [[ -n "${requested}" ]]; then
+        if ! is_valid_port "${requested}"; then
+            echo -e "${red}Invalid ${label}: ${requested}${plain}" >&2
+            return 1
+        fi
+        if is_port_in_use "${requested}"; then
+            echo -e "${red}${label} already in use: ${requested}${plain}" >&2
+            return 1
+        fi
+        echo "${requested}"
+        return 0
+    fi
+
+    find_free_port "${start_port}" "${end_port}" || {
+        echo -e "${red}Failed to find available ${label} in range ${start_port}-${end_port}${plain}" >&2
+        return 1
+    }
+}
+
+require_sqlite3() {
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo -e "${red}sqlite3 is required for per-instance setting management${plain}" >&2
+        exit 1
+    fi
+}
+
+save_db_setting() {
+    local key="$1"
+    local value="$2"
+    local db_path="${xui_db_folder}/x-ui.db"
+    require_sqlite3
+    sqlite3 "${db_path}" "INSERT INTO settings (key, value) VALUES ('${key}', '${value}') ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+}
+
 install_base() {
     case "${release}" in
         ubuntu | debian | armbian)
-            apt-get update && apt-get install -y -q cron curl tar tzdata socat ca-certificates
+            apt-get update && apt-get install -y -q cron curl tar tzdata socat ca-certificates sqlite3
         ;;
         fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
-            dnf -y update && dnf install -y -q curl tar tzdata socat ca-certificates
+            dnf -y update && dnf install -y -q curl tar tzdata socat ca-certificates sqlite
         ;;
         centos)
             if [[ "${VERSION_ID}" =~ ^7 ]]; then
-                yum -y update && yum install -y curl tar tzdata socat ca-certificates
+                yum -y update && yum install -y curl tar tzdata socat ca-certificates sqlite
             else
-                dnf -y update && dnf install -y -q curl tar tzdata socat ca-certificates
+                dnf -y update && dnf install -y -q curl tar tzdata socat ca-certificates sqlite
             fi
         ;;
         arch | manjaro | parch)
-            pacman -Syu && pacman -Syu --noconfirm curl tar tzdata socat ca-certificates
+            pacman -Syu && pacman -Syu --noconfirm curl tar tzdata socat ca-certificates sqlite
         ;;
         opensuse-tumbleweed | opensuse-leap)
-            zypper refresh && zypper -q install -y curl tar timezone socat ca-certificates
+            zypper refresh && zypper -q install -y curl tar timezone socat ca-certificates sqlite3
         ;;
         alpine)
-            apk update && apk add curl tar tzdata socat ca-certificates
+            apk update && apk add curl tar tzdata socat ca-certificates sqlite
         ;;
         *)
-            apt-get update && apt-get install -y -q curl tar tzdata socat ca-certificates
+            apt-get update && apt-get install -y -q curl tar tzdata socat ca-certificates sqlite3
         ;;
     esac
 }
@@ -830,17 +958,29 @@ config_after_install() {
             local config_webBasePath=$(gen_random_string 18)
             local config_username=$(gen_random_string 10)
             local config_password=$(gen_random_string 10)
-            
-            read -rp "Would you like to customize the Panel Port settings? (If not, a random port will be applied) [y/n]: " config_confirm
-            if [[ "${config_confirm}" == "y" || "${config_confirm}" == "Y" ]]; then
-                read -rp "Please set up the panel port: " config_port
-                echo -e "${yellow}Your Panel Port is: ${config_port}${plain}"
-            else
-                local config_port=$(shuf -i 1024-62000 -n 1)
-                echo -e "${yellow}Generated random port: ${config_port}${plain}"
+            local requested_panel_port="${xui_requested_panel_port}"
+            if [[ -z "${requested_panel_port}" && -t 0 ]]; then
+                read -rp "Would you like to customize the Panel Port settings? (If not, an available instance port will be applied) [y/n]: " config_confirm
+                if [[ "${config_confirm}" == "y" || "${config_confirm}" == "Y" ]]; then
+                    read -rp "Please set up the panel port: " requested_panel_port
+                fi
             fi
-            
+
+            local config_port
+            config_port="$(resolve_port_choice "panelPort" "${requested_panel_port}" 10000 19999)"
+            echo -e "${yellow}Selected panel port: ${config_port}${plain}"
+
+            local config_sub_port
+            config_sub_port="$(resolve_port_choice "subPort" "${xui_requested_sub_port}" 20000 29999)"
+            if [[ "${config_sub_port}" == "${config_port}" ]]; then
+                echo -e "${red}subPort must differ from panelPort (${config_port})${plain}"
+                exit 1
+            fi
+            echo -e "${yellow}Selected sub server port: ${config_sub_port}${plain}"
+
             ${xui_folder}/x-ui setting -username "${config_username}" -password "${config_password}" -port "${config_port}" -webBasePath "${config_webBasePath}"
+            ${xui_folder}/x-ui migrate
+            save_db_setting "subPort" "${config_sub_port}"
             
             echo ""
             echo -e "${green}═══════════════════════════════════════════${plain}"
@@ -860,8 +1000,11 @@ config_after_install() {
             echo -e "${green}Username:    ${config_username}${plain}"
             echo -e "${green}Password:    ${config_password}${plain}"
             echo -e "${green}Port:        ${config_port}${plain}"
+            echo -e "${green}SubPort:     ${config_sub_port}${plain}"
             echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
             echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
+            echo -e "${green}Service:     ${xui_service_name}${plain}"
+            echo -e "${green}InstanceDir: ${xui_folder}${plain}"
             echo -e "${green}═══════════════════════════════════════════${plain}"
             echo -e "${yellow}⚠ IMPORTANT: Save these credentials securely!${plain}"
             echo -e "${yellow}⚠ SSL Certificate: Enabled and configured${plain}"
@@ -1060,6 +1203,20 @@ install_x-ui() {
 └───────────────────────────────────────────────────────┘"
 }
 
-echo -e "${green}Running...${plain}"
-install_base
-install_x-ui $1
+main() {
+    parse_cli_args "$@"
+    prompt_instance_name
+    apply_instance_paths
+    ensure_isolated_instance_layout
+    require_root
+    detect_release
+    echo "Arch: $(arch)"
+
+    echo -e "${green}Running...${plain}"
+    install_base
+    install_x-ui "${install_version}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

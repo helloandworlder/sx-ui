@@ -28,6 +28,12 @@ As an enhanced fork of the original X-UI project, 3X-UI provides improved stabil
 bash <(curl -fsSL https://raw.githubusercontent.com/helloandworlder/sx-ui/main/install.sh)
 ```
 
+Multi-instance install with an explicit instance id:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/helloandworlder/sx-ui/main/install.sh) --instance hk01
+```
+
 For full documentation, please visit the [project Wiki](https://github.com/helloandworlder/sx-ui/wiki).
 
 ## A Special Thanks to

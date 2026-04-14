@@ -135,6 +135,19 @@ apply_instance_paths() {
 prompt_instance_name
 apply_instance_paths
 
+current_panel_port() {
+    ${xui_folder}/x-ui setting -show true 2>/dev/null | grep -Eo 'port: .+' | awk '{print $2}'
+}
+
+current_sub_port() {
+    local db_path="${XUI_DB_FOLDER:-/etc/sx-ui/${xui_instance}}/x-ui.db"
+    if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${db_path}" ]]; then
+        sqlite3 "${db_path}" "SELECT value FROM settings WHERE key = 'subPort' LIMIT 1;" 2>/dev/null
+        return 0
+    fi
+    echo "2096"
+}
+
 select_instance() {
     xui_instance="$1"
     apply_instance_paths
@@ -241,7 +254,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls ${GITHUB_RAW_BASE}/install.sh)
+    bash <(curl -Ls ${GITHUB_RAW_BASE}/install.sh) --instance "${xui_instance}"
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -260,7 +273,7 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls ${GITHUB_RAW_BASE}/update.sh)
+    bash <(curl -Ls ${GITHUB_RAW_BASE}/update.sh) --instance "${xui_instance}"
     if [[ $? == 0 ]]; then
         LOGI "Update is complete, Panel has automatically restarted "
         before_show_menu
@@ -300,7 +313,7 @@ legacy_version() {
         exit 1
     fi
     # Use the entered panel version in the download link
-    install_command="bash <(curl -Ls \"https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/v$tag_version/install.sh\") v$tag_version"
+    install_command="bash <(curl -Ls \"https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/v$tag_version/install.sh\") --instance \"${xui_instance}\" v$tag_version"
 
     echo "Downloading and installing panel version $tag_version..."
     eval $install_command
@@ -917,6 +930,13 @@ firewall_menu() {
 }
 
 install_firewall() {
+    local panel_port
+    local sub_port
+    panel_port="$(current_panel_port)"
+    sub_port="$(current_sub_port)"
+    panel_port="${panel_port:-2053}"
+    sub_port="${sub_port:-2096}"
+
     if ! command -v ufw &>/dev/null; then
         echo "ufw firewall is not installed. Installing now..."
         apt-get update
@@ -934,8 +954,8 @@ install_firewall() {
         ufw allow ssh
         ufw allow http
         ufw allow https
-        ufw allow 2053/tcp #webPort
-        ufw allow 2096/tcp #subport
+        ufw allow "${panel_port}/tcp" #webPort
+        ufw allow "${sub_port}/tcp" #subport
 
         # Enable the firewall
         ufw --force enable
