@@ -75,8 +75,6 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-          - goos: linux
-            goarch: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,14 +85,9 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Install cross-compile deps
-        if: matrix.goarch == 'arm64'
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Build binary
         run: |
-          export CC=${{ matrix.goarch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
+          export CC=gcc
           CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath -ldflags="-s -w" \
             -o build/x-ui main.go
@@ -154,7 +147,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=sx-ui
@@ -177,7 +170,6 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/sx-ui-linux-amd64/*
-            artifacts/sx-ui-linux-arm64/*
           body: |
             ## Install
 
