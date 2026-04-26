@@ -188,6 +188,24 @@ class XrayCommonClass {
         }
         return v2Headers;
     }
+
+    static normalizeTelegramId(tgId) {
+        if (tgId === null || tgId === undefined || tgId === '') {
+            return 0;
+        }
+
+        if (typeof tgId === 'number') {
+            return Number.isFinite(tgId) ? Math.trunc(tgId) : 0;
+        }
+
+        const normalized = String(tgId).trim();
+        if (normalized === '') {
+            return 0;
+        }
+
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+    }
 }
 
 class TcpStreamSettings extends XrayCommonClass {
@@ -2050,7 +2068,7 @@ Inbound.VmessSettings.VMESS = class extends XrayCommonClass {
         this.totalGB = totalGB;
         this.expiryTime = expiryTime;
         this.enable = enable;
-        this.tgId = tgId;
+        this.tgId = XrayCommonClass.normalizeTelegramId(tgId);
         this.subId = subId;
         this.comment = comment;
         this.reset = reset;
@@ -2069,7 +2087,7 @@ Inbound.VmessSettings.VMESS = class extends XrayCommonClass {
             json.totalGB,
             json.expiryTime,
             json.enable,
-            json.tgId,
+            XrayCommonClass.normalizeTelegramId(json.tgId),
             json.subId,
             json.comment,
             json.reset,
@@ -2211,7 +2229,7 @@ Inbound.VLESSSettings.VLESS = class extends XrayCommonClass {
         this.totalGB = totalGB;
         this.expiryTime = expiryTime;
         this.enable = enable;
-        this.tgId = tgId;
+        this.tgId = XrayCommonClass.normalizeTelegramId(tgId);
         this.subId = subId;
         this.comment = comment;
         this.reset = reset;
@@ -2230,7 +2248,7 @@ Inbound.VLESSSettings.VLESS = class extends XrayCommonClass {
             json.totalGB,
             json.expiryTime,
             json.enable,
-            json.tgId,
+            XrayCommonClass.normalizeTelegramId(json.tgId),
             json.subId,
             json.comment,
             json.reset,
@@ -2361,7 +2379,7 @@ Inbound.TrojanSettings.Trojan = class extends XrayCommonClass {
         this.totalGB = totalGB;
         this.expiryTime = expiryTime;
         this.enable = enable;
-        this.tgId = tgId;
+        this.tgId = XrayCommonClass.normalizeTelegramId(tgId);
         this.subId = subId;
         this.comment = comment;
         this.reset = reset;
@@ -2379,7 +2397,7 @@ Inbound.TrojanSettings.Trojan = class extends XrayCommonClass {
             totalGB: this.totalGB,
             expiryTime: this.expiryTime,
             enable: this.enable,
-            tgId: this.tgId,
+            tgId: XrayCommonClass.normalizeTelegramId(this.tgId),
             subId: this.subId,
             comment: this.comment,
             reset: this.reset,
@@ -2398,7 +2416,7 @@ Inbound.TrojanSettings.Trojan = class extends XrayCommonClass {
             json.totalGB,
             json.expiryTime,
             json.enable,
-            json.tgId,
+            XrayCommonClass.normalizeTelegramId(json.tgId),
             json.subId,
             json.comment,
             json.reset,
@@ -2612,7 +2630,7 @@ Inbound.ShadowsocksSettings.Shadowsocks = class extends XrayCommonClass {
         this.totalGB = totalGB;
         this.expiryTime = expiryTime;
         this.enable = enable;
-        this.tgId = tgId;
+        this.tgId = XrayCommonClass.normalizeTelegramId(tgId);
         this.subId = subId;
         this.comment = comment;
         this.reset = reset;
@@ -2631,7 +2649,7 @@ Inbound.ShadowsocksSettings.Shadowsocks = class extends XrayCommonClass {
             totalGB: this.totalGB,
             expiryTime: this.expiryTime,
             enable: this.enable,
-            tgId: this.tgId,
+            tgId: XrayCommonClass.normalizeTelegramId(this.tgId),
             subId: this.subId,
             comment: this.comment,
             reset: this.reset,
@@ -2651,7 +2669,7 @@ Inbound.ShadowsocksSettings.Shadowsocks = class extends XrayCommonClass {
             json.totalGB,
             json.expiryTime,
             json.enable,
-            json.tgId,
+            XrayCommonClass.normalizeTelegramId(json.tgId),
             json.subId,
             json.comment,
             json.reset,

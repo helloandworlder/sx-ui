@@ -956,6 +956,15 @@ class FileManager {
 
 class IntlUtil {
     static formatDate(date) {
+        if (date === null || date === undefined || date === '') {
+            return '-';
+        }
+
+        const normalizedDate = new Date(date);
+        if (Number.isNaN(normalizedDate.getTime())) {
+            return '-';
+        }
+
         const language = LanguageManager.getLanguage()
 
         let intlOptions = {
@@ -972,16 +981,25 @@ class IntlUtil {
             intlOptions
         )
 
-        return intl.format(new Date(date))
+        return intl.format(normalizedDate)
     }
     static formatRelativeTime(date) {
+        if (date === null || date === undefined || date === '') {
+            return '-';
+        }
+
+        const normalizedDate = Number(date)
+        if (Number.isNaN(normalizedDate)) {
+            return '-';
+        }
+
         const language = LanguageManager.getLanguage()
         const now = new Date()
 
         // Handle delayed start (negative expiryTime values)
-        const diff = date < 0
-            ? Math.round(date / (1000 * 60 * 60 * 24))
-            : Math.round((date - now) / (1000 * 60 * 60 * 24))
+        const diff = normalizedDate < 0
+            ? Math.round(normalizedDate / (1000 * 60 * 60 * 24))
+            : Math.round((normalizedDate - now) / (1000 * 60 * 60 * 24))
         const formatter = new Intl.RelativeTimeFormat(language, { numeric: 'auto' })
 
         return formatter.format(diff, 'day');

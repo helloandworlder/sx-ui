@@ -25,7 +25,7 @@
         clientIps: null,
         delayedStart: false,
         ok() {
-            this.syncClientRateLimit(clientModalApp.client);
+            clientModal.syncClientRateLimit(clientModalApp.client);
             if (clientModal.isEdit) {
                 ObjectUtil.execute(clientModal.confirm, clientModalApp.client, clientModal.dbInbound.id, clientModal.oldClientId);
             } else {

@@ -25,6 +25,15 @@ const (
 	WireGuard   Protocol = "wireguard"
 )
 
+func (p Protocol) Normalize() Protocol {
+	switch p {
+	case "socks5":
+		return Socks
+	default:
+		return p
+	}
+}
+
 // User represents a user account in the 3x-ui panel.
 type User struct {
 	Id       int    `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -91,7 +100,7 @@ func (i *Inbound) GenXrayInboundConfig() *xray.InboundConfig {
 	return &xray.InboundConfig{
 		Listen:         json_util.RawMessage(listen),
 		Port:           i.Port,
-		Protocol:       string(i.Protocol),
+		Protocol:       string(i.Protocol.Normalize()),
 		Settings:       json_util.RawMessage(i.Settings),
 		StreamSettings: json_util.RawMessage(i.StreamSettings),
 		Tag:            i.Tag,

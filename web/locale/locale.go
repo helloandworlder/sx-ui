@@ -6,6 +6,7 @@ import (
 	"embed"
 	"io/fs"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/helloandworlder/sx-ui/v2/logger"
@@ -154,7 +155,7 @@ func loadTranslationsFromDisk(bundle *i18n.Bundle) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if shouldSkipTranslationPath(path, d) {
 			return nil
 		}
 		data, err := fs.ReadFile(root, path)
@@ -167,18 +168,18 @@ func loadTranslationsFromDisk(bundle *i18n.Bundle) error {
 }
 
 // parseTranslationFiles parses embedded translation files and adds them to the i18n bundle.
-func parseTranslationFiles(i18nFS embed.FS, i18nBundle *i18n.Bundle) error {
+func parseTranslationFiles(i18nFS fs.FS, i18nBundle *i18n.Bundle) error {
 	err := fs.WalkDir(i18nFS, "translation",
 		func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 
-			if d.IsDir() {
+			if shouldSkipTranslationPath(path, d) {
 				return nil
 			}
 
-			data, err := i18nFS.ReadFile(path)
+			data, err := fs.ReadFile(i18nFS, path)
 			if err != nil {
 				return err
 			}
@@ -191,4 +192,19 @@ func parseTranslationFiles(i18nFS embed.FS, i18nBundle *i18n.Bundle) error {
 	}
 
 	return nil
+}
+
+func shouldSkipTranslationPath(filePath string, d fs.DirEntry) bool {
+	if d.IsDir() {
+		return true
+	}
+
+	name := d.Name()
+	if name == "" {
+		name = path.Base(filePath)
+	}
+
+	// Ignore macOS AppleDouble and other hidden artifacts that can be copied
+	// alongside translation files and contain binary data instead of TOML.
+	return strings.HasPrefix(name, ".")
 }
