@@ -169,16 +169,18 @@ class KcpStreamSettings extends CommonClass {
         tti = 20,
         uplinkCapacity = 5,
         downlinkCapacity = 20,
-        cwndMultiplier = 1,
-        maxSendingWindow = 1350,
+        congestion = false,
+        readBufferSize = 1,
+        writeBufferSize = 1,
     ) {
         super();
         this.mtu = mtu;
         this.tti = tti;
         this.upCap = uplinkCapacity;
         this.downCap = downlinkCapacity;
-        this.cwndMultiplier = cwndMultiplier;
-        this.maxSendingWindow = maxSendingWindow;
+        this.congestion = congestion;
+        this.readBuffer = readBufferSize;
+        this.writeBuffer = writeBufferSize;
     }
 
     static fromJson(json = {}) {
@@ -187,8 +189,9 @@ class KcpStreamSettings extends CommonClass {
             json.tti,
             json.uplinkCapacity,
             json.downlinkCapacity,
-            json.cwndMultiplier,
-            json.maxSendingWindow,
+            json.congestion,
+            json.readBufferSize,
+            json.writeBufferSize,
         );
     }
 
@@ -198,8 +201,9 @@ class KcpStreamSettings extends CommonClass {
             tti: this.tti,
             uplinkCapacity: this.upCap,
             downlinkCapacity: this.downCap,
-            cwndMultiplier: this.cwndMultiplier,
-            maxSendingWindow: this.maxSendingWindow,
+            congestion: this.congestion,
+            readBufferSize: this.readBuffer,
+            writeBufferSize: this.writeBuffer,
         };
     }
 }
@@ -573,11 +577,8 @@ class UdpMask extends CommonClass {
             case 'mkcp-aes128gcm':
                 return { password: settings.password || '' };
             case 'header-dns':
-                return { domain: settings.domain || '' };
             case 'xdns':
-                return { resolvers: Array.isArray(settings.resolvers) ? settings.resolvers : [] };
-            case 'xicmp':
-                return { ip: settings.ip || '', id: settings.id ?? 0 };
+                return { domain: settings.domain || '' };
             case 'mkcp-original':
             case 'header-dtls':
             case 'header-srtp':
@@ -585,12 +586,6 @@ class UdpMask extends CommonClass {
             case 'header-wechat':
             case 'header-wireguard':
                 return {}; // No settings needed
-            case 'header-custom':
-                return { client: [], server: [] };
-            case 'noise':
-                return { reset: 0, noise: [] };
-            case 'sudoku':
-                return { ascii: '', customTable: '', customTables: [], paddingMin: 0, paddingMax: 0 };
             default:
                 return settings;
         }
@@ -787,8 +782,8 @@ class Outbound extends CommonClass {
     }
 
     canEnableTls() {
-        if (this.protocol === Protocols.Hysteria) return true;
-        if (![Protocols.VMess, Protocols.VLESS, Protocols.Trojan, Protocols.Shadowsocks].includes(this.protocol)) return false;
+        if (![Protocols.VMess, Protocols.VLESS, Protocols.Trojan, Protocols.Shadowsocks, Protocols.Hysteria].includes(this.protocol)) return false;
+        if (this.protocol === Protocols.Hysteria) return this.stream.network === 'hysteria';
         return ["tcp", "ws", "http", "grpc", "httpupgrade", "xhttp"].includes(this.stream.network);
     }
 
@@ -930,13 +925,7 @@ class Outbound extends CommonClass {
         } else if (network === 'httpupgrade') {
             stream.httpupgrade = new HttpUpgradeStreamSettings(json.path, json.host);
         } else if (network === 'xhttp') {
-            // xHTTPStreamSettings positional args are (path, host, headers, ..., mode);
-            // passing `json.mode` as the 3rd argument used to land in the `headers`
-            // slot, dropping the mode on the floor. Build the object and set mode
-            // explicitly to avoid that.
-            const xh = new xHTTPStreamSettings(json.path, json.host);
-            if (json.mode) xh.mode = json.mode;
-            stream.xhttp = xh;
+            stream.xhttp = new xHTTPStreamSettings(json.path, json.host, json.mode);
         }
 
         if (json.tls && json.tls == 'tls') {
@@ -978,25 +967,7 @@ class Outbound extends CommonClass {
         } else if (type === 'httpupgrade') {
             stream.httpupgrade = new HttpUpgradeStreamSettings(path, host);
         } else if (type === 'xhttp') {
-            // Same positional bug as in the VMess-JSON branch above:
-            // passing `mode` as the 3rd positional arg put it into the
-            // `headers` slot. Build explicitly instead.
-            const xh = new xHTTPStreamSettings(path, host);
-            if (mode) xh.mode = mode;
-            const xpb = url.searchParams.get('x_padding_bytes');
-            if (xpb) xh.xPaddingBytes = xpb;
-            const extraRaw = url.searchParams.get('extra');
-            if (extraRaw) {
-                try {
-                    const extra = JSON.parse(extraRaw);
-                    if (typeof extra.xPaddingBytes === 'string' && extra.xPaddingBytes) xh.xPaddingBytes = extra.xPaddingBytes;
-                    if (extra.xPaddingObfsMode === true) xh.xPaddingObfsMode = true;
-                    ["xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"].forEach(k => {
-                        if (typeof extra[k] === 'string' && extra[k]) xh[k] = extra[k];
-                    });
-                } catch (_) { /* ignore malformed extra */ }
-            }
-            stream.xhttp = xh;
+            stream.xhttp = new xHTTPStreamSettings(path, host, mode);
         }
 
         if (security == 'tls') {
@@ -1162,15 +1133,13 @@ Outbound.FreedomSettings = class extends CommonClass {
         domainStrategy = '',
         redirect = '',
         fragment = {},
-        noises = [],
-        ipsBlocked = [],
+        noises = []
     ) {
         super();
         this.domainStrategy = domainStrategy;
         this.redirect = redirect;
-        this.fragment = fragment || {};
-        this.noises = Array.isArray(noises) ? noises : [];
-        this.ipsBlocked = Array.isArray(ipsBlocked) ? ipsBlocked : [];
+        this.fragment = fragment;
+        this.noises = noises;
     }
 
     addNoise() {
@@ -1185,9 +1154,8 @@ Outbound.FreedomSettings = class extends CommonClass {
         return new Outbound.FreedomSettings(
             json.domainStrategy,
             json.redirect,
-            json.fragment ? Outbound.FreedomSettings.Fragment.fromJson(json.fragment) : {},
-            json.noises ? json.noises.map(noise => Outbound.FreedomSettings.Noise.fromJson(noise)) : [],
-            json.ipsBlocked || [],
+            json.fragment ? Outbound.FreedomSettings.Fragment.fromJson(json.fragment) : undefined,
+            json.noises ? json.noises.map(noise => Outbound.FreedomSettings.Noise.fromJson(noise)) : undefined,
         );
     }
 
@@ -1197,7 +1165,6 @@ Outbound.FreedomSettings = class extends CommonClass {
             redirect: ObjectUtil.isEmpty(this.redirect) ? undefined : this.redirect,
             fragment: Object.keys(this.fragment).length === 0 ? undefined : this.fragment,
             noises: this.noises.length === 0 ? undefined : Outbound.FreedomSettings.Noise.toJsonArray(this.noises),
-            ipsBlocked: this.ipsBlocked.length === 0 ? undefined : this.ipsBlocked,
         };
     }
 };
