@@ -12,7 +12,7 @@
     <a-form-item label='{{ i18n "protocol" }}'>
         <a-select v-model="inbound.protocol" :disabled="isEdit"
             :dropdown-class-name="themeSwitcher.currentTheme">
-            <a-select-option v-for="p in Protocols" :key="p" :value="p">[[ p
+            <a-select-option v-for="p in Protocols" :key="p" :value="p">[[ ProtocolLabels[p] || p
                 ]]</a-select-option>
         </a-select>
     </a-form-item>
@@ -140,6 +140,11 @@
 <!-- mixed -->
 <template v-if="inbound.protocol === Protocols.MIXED">
     {{template "form/mixed"}}
+</template>
+
+<!-- socks -->
+<template v-if="inbound.protocol === Protocols.SOCKS">
+    {{template "form/socks"}}
 </template>
 
 <!-- http -->

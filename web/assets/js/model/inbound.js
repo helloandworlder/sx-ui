@@ -12,6 +12,20 @@ const Protocols = {
     TUN: 'tun',
 };
 
+const ProtocolLabels = {
+    [Protocols.VMESS]: 'VMess',
+    [Protocols.VLESS]: 'VLESS',
+    [Protocols.TROJAN]: 'Trojan',
+    [Protocols.SHADOWSOCKS]: 'Shadowsocks',
+    [Protocols.TUNNEL]: 'Tunnel',
+    [Protocols.SOCKS]: 'Socks5',
+    [Protocols.MIXED]: 'Mixed (Socks5/HTTP)',
+    [Protocols.HTTP]: 'HTTP',
+    [Protocols.HYSTERIA]: 'Hysteria2',
+    [Protocols.WIREGUARD]: 'WireGuard',
+    [Protocols.TUN]: 'Tun',
+};
+
 const SSMethods = {
     AES_256_GCM: 'aes-256-gcm',
     CHACHA20_POLY1305: 'chacha20-poly1305',
@@ -120,6 +134,7 @@ const MODE_OPTION = {
 };
 
 Object.freeze(Protocols);
+Object.freeze(ProtocolLabels);
 Object.freeze(SSMethods);
 Object.freeze(TLS_FLOW_CONTROL);
 Object.freeze(TLS_VERSION_OPTION);
@@ -1987,8 +2002,8 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.SHADOWSOCKS: return Inbound.ShadowsocksSettings.fromJson(json);
             case Protocols.HYSTERIA: return Inbound.HysteriaSettings.fromJson(json);
             case Protocols.TUNNEL: return Inbound.TunnelSettings.fromJson(json);
-            case Protocols.SOCKS: return Inbound.MixedSettings.fromJson(json);
-            case Protocols.MIXED: return Inbound.MixedSettings.fromJson(json);
+            case Protocols.SOCKS: return Inbound.MixedSettings.fromJson(json, Protocols.SOCKS);
+            case Protocols.MIXED: return Inbound.MixedSettings.fromJson(json, Protocols.MIXED);
             case Protocols.HTTP: return Inbound.HttpSettings.fromJson(json);
             case Protocols.WIREGUARD: return Inbound.WireguardSettings.fromJson(json);
             case Protocols.TUN: return Inbound.TunSettings.fromJson(json);
@@ -2761,15 +2776,15 @@ Inbound.MixedSettings = class extends Inbound.Settings {
         this.accounts.splice(index, 1);
     }
 
-    static fromJson(json = {}) {
+    static fromJson(json = {}, protocol = Protocols.MIXED) {
         let accounts;
         if (json.auth === 'password') {
-            accounts = json.accounts.map(
+            accounts = (json.accounts || []).map(
                 account => Inbound.MixedSettings.SocksAccount.fromJson(account)
             )
         }
         return new Inbound.MixedSettings(
-            Protocols.MIXED,
+            protocol,
             json.auth,
             accounts,
             json.udp,
