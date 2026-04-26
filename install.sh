@@ -136,6 +136,71 @@ ensure_isolated_instance_layout() {
     return 0
 }
 
+detect_legacy_xui_install() {
+    [[ -d "/usr/local/x-ui" ]] && return 0
+    [[ -d "/etc/x-ui" ]] && return 0
+    [[ -f "${xui_service}/x-ui.service" ]] && return 0
+    [[ -f "/etc/init.d/x-ui" ]] && return 0
+    [[ -e "/usr/bin/x-ui" ]] && return 0
+    return 1
+}
+
+backup_and_move_legacy_path() {
+    local path="$1"
+    local backup_dir="$2"
+    local label
+    label="$(echo "${path}" | sed 's#^/##; s#/#__#g')"
+    if [[ -e "${path}" || -L "${path}" ]]; then
+        mkdir -p "${backup_dir}"
+        mv "${path}" "${backup_dir}/${label}"
+        echo -e "${green}Backed up legacy ${path} -> ${backup_dir}/${label}${plain}"
+    fi
+}
+
+takeover_legacy_xui() {
+    if [[ "${SX_UI_SKIP_LEGACY_TAKEOVER:-0}" == "1" ]]; then
+        echo -e "${yellow}Skipping legacy 3x-ui takeover because SX_UI_SKIP_LEGACY_TAKEOVER=1${plain}"
+        return 0
+    fi
+    if ! detect_legacy_xui_install; then
+        return 0
+    fi
+
+    local ts
+    ts="$(date +%Y%m%d%H%M%S)"
+    local backup_dir="${SX_UI_LEGACY_BACKUP_DIR:-/var/backups/sx-ui/legacy-x-ui-${ts}}"
+    echo -e "${yellow}Detected legacy 3x-ui installation; sx-ui will back it up and take over.${plain}"
+    echo -e "${yellow}Backup directory: ${backup_dir}${plain}"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop x-ui >/dev/null 2>&1 || true
+        systemctl disable x-ui >/dev/null 2>&1 || true
+    fi
+    if command -v rc-service >/dev/null 2>&1; then
+        rc-service x-ui stop >/dev/null 2>&1 || true
+        rc-update del x-ui >/dev/null 2>&1 || true
+    fi
+
+    mkdir -p "${xui_db_folder}" "${xui_log_folder}" "${backup_dir}"
+    if [[ ! -f "${xui_db_folder}/x-ui.db" ]]; then
+        if [[ -f "/etc/x-ui/x-ui.db" ]]; then
+            cp -a "/etc/x-ui/x-ui.db" "${xui_db_folder}/x-ui.db"
+            echo -e "${green}Migrated legacy database /etc/x-ui/x-ui.db -> ${xui_db_folder}/x-ui.db${plain}"
+        elif [[ -f "/usr/local/x-ui/db/x-ui.db" ]]; then
+            cp -a "/usr/local/x-ui/db/x-ui.db" "${xui_db_folder}/x-ui.db"
+            echo -e "${green}Migrated legacy database /usr/local/x-ui/db/x-ui.db -> ${xui_db_folder}/x-ui.db${plain}"
+        fi
+    else
+        echo -e "${yellow}sx-ui database already exists at ${xui_db_folder}/x-ui.db; legacy DB copied only to backup.${plain}"
+    fi
+
+    backup_and_move_legacy_path "/usr/local/x-ui" "${backup_dir}"
+    backup_and_move_legacy_path "/etc/x-ui" "${backup_dir}"
+    backup_and_move_legacy_path "${xui_service}/x-ui.service" "${backup_dir}"
+    backup_and_move_legacy_path "/etc/init.d/x-ui" "${backup_dir}"
+    backup_and_move_legacy_path "/usr/bin/x-ui" "${backup_dir}"
+}
+
 resolve_service_name() {
     if [[ -f "${xui_service}/${xui_service_name}.service" ]]; then
         echo "${xui_service_name}"
@@ -1139,6 +1204,7 @@ install_x-ui() {
     local temp_dir
     temp_dir="$(mktemp -d)"
     mkdir -p "$(dirname "${xui_folder}")"
+    takeover_legacy_xui
     
     # Download resources
     if [ $# == 0 ]; then
@@ -1211,6 +1277,10 @@ install_x-ui() {
     # Update x-ui cli and se set permission
     mv -f /usr/bin/sx-ui-temp /usr/bin/sx-ui
     chmod +x /usr/bin/sx-ui
+    if [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
+        echo -e "${green}Legacy x-ui command now points to sx-ui.${plain}"
+    fi
     mkdir -p "${xui_db_folder}" "${xui_log_folder}"
     write_instance_env
     config_after_install
