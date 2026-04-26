@@ -113,7 +113,7 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	xrayConfig.EnsureAPIServices("HandlerService", "LoggerService", "StatsService", "RoutingService", "RateLimitService")
+	xrayConfig.EnsureAPIServices("HandlerService", "LoggerService", "StatsService", "RoutingService", "RateLimitService", "ReverseService")
 
 	s.inboundService.AddTraffic(nil, nil)
 
