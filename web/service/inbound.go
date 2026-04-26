@@ -484,6 +484,16 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if err != nil {
 		return inbound, false, err
 	}
+
+	// Default new clients to enabled. The Client.Enable bool zero-value is false,
+	// which causes xray's runtime config builder to drop the user from inbound
+	// settings (see GetXrayConfig in xray.go). API callers that don't explicitly
+	// set "enable":true would otherwise produce an inbound that listens but
+	// rejects every authentication attempt.
+	for i := range clients {
+		clients[i].Enable = true
+	}
+
 	rateLimitRestart := s.clientsRequireRateLimitRestart(nil, clients)
 
 	// Ensure created_at and updated_at on clients in settings
