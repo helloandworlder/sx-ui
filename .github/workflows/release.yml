@@ -92,9 +92,20 @@ jobs:
             go build -trimpath -ldflags="-s -w" \
             -o build/x-ui main.go
 
+      - name: Build xray-core (sx-core fork) + fetch geo data
+        run: ./DockerInit.sh "${{ matrix.goarch }}"
+
+      - name: Verify xray binary is sx-core fork (not upstream)
+        run: |
+          # The release MUST ship the sx-core fork's xray, otherwise
+          # rate-limit gRPC + reverse-command + hysteria registration
+          # are silently absent and the panel's signature features no-op.
+          ./build/bin/xray-linux-${{ matrix.goarch }} version
+          ./build/bin/xray-linux-${{ matrix.goarch }} version | grep -q "sx-core-rebase" \
+            || (echo "FAIL: xray binary missing sx-core-rebase build marker"; exit 1)
+
       - name: Prepare runtime bundle
         run: |
-          ./DockerInit.sh "${{ matrix.goarch }}"
           rm -rf dist
           mkdir -p dist/sx-ui/bin
           cp build/x-ui dist/sx-ui/x-ui

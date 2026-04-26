@@ -2,9 +2,10 @@ name: sx-ui CI
 
 on:
   push:
-    branches: [staging]
+    branches: [main, staging, "rebase/**"]
   pull_request:
-    branches: [staging]
+    branches: [main, staging]
+  workflow_dispatch:
 
 concurrency:
   group: sx-ui-ci-${{ github.ref }}
@@ -31,6 +32,15 @@ jobs:
       - run: go test ./... || true
 
       - run: CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o build/x-ui main.go
+
+      - name: Verify xray builds from sx-core fork (DockerInit.sh smoke)
+        run: |
+          ./DockerInit.sh amd64
+          test -x build/bin/xray-linux-amd64
+          # Confirm it's our fork build, not upstream binary
+          build/bin/xray-linux-amd64 version | grep -q "sx-core-rebase" \
+            && echo "OK: xray built from sx-core fork" \
+            || (echo "FAIL: xray binary missing sx-core-rebase marker"; exit 1)
 
   docker:
     needs: validate
