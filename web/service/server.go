@@ -20,12 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/helloandworlder/sx-ui/v2/config"
-	"github.com/helloandworlder/sx-ui/v2/database"
-	"github.com/helloandworlder/sx-ui/v2/logger"
-	"github.com/helloandworlder/sx-ui/v2/util/common"
-	"github.com/helloandworlder/sx-ui/v2/util/sys"
-	"github.com/helloandworlder/sx-ui/v2/xray"
+	"github.com/mhsanaei/3x-ui/v2/config"
+	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/util/sys"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -567,7 +567,7 @@ func (s *ServerService) GetXrayVersions() ([]string, error) {
 			continue
 		}
 
-		if major > 26 || (major == 26 && minor > 2) || (major == 26 && minor == 2 && patch >= 6) {
+		if major > 26 || (major == 26 && minor > 3) || (major == 26 && minor == 3 && patch >= 10) {
 			versions = append(versions, release.TagName)
 		}
 	}

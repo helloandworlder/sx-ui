@@ -11,13 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-json"
 
-	"github.com/helloandworlder/sx-ui/v2/database"
-	"github.com/helloandworlder/sx-ui/v2/database/model"
-	"github.com/helloandworlder/sx-ui/v2/logger"
-	"github.com/helloandworlder/sx-ui/v2/util/common"
-	"github.com/helloandworlder/sx-ui/v2/util/random"
-	"github.com/helloandworlder/sx-ui/v2/web/service"
-	"github.com/helloandworlder/sx-ui/v2/xray"
+	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/util/random"
+	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 // SubService provides business logic for generating subscription links and managing subscription data.
@@ -120,7 +120,7 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) 
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client 
 		WHERE
-			protocol in ('vmess','vless','trojan','shadowsocks')
+			protocol in ('vmess','vless','trojan','shadowsocks','hysteria')
 			AND JSON_EXTRACT(client.value, '$.subId') = ? AND enable = ?
 	)`, subId, true).Find(&inbounds).Error
 	if err != nil {
@@ -171,6 +171,8 @@ func (s *SubService) getLink(inbound *model.Inbound, email string) string {
 		return s.genTrojanLink(inbound, email)
 	case "shadowsocks":
 		return s.genShadowsocksLink(inbound, email)
+	case "hysteria":
+		return s.genHysteriaLink(inbound, email)
 	}
 	return ""
 }
@@ -247,7 +249,22 @@ func (s *SubService) genVmessLink(inbound *model.Inbound, email string) string {
 			headers, _ := xhttp["headers"].(map[string]any)
 			obj["host"] = searchHost(headers)
 		}
-		obj["mode"] = xhttp["mode"].(string)
+		obj["mode"], _ = xhttp["mode"].(string)
+		// VMess base64 JSON supports arbitrary keys; copy the padding
+		// settings through so clients can match the server's xhttp
+		// xPaddingBytes range and, when the admin opted into obfs
+		// mode, the custom key / header / placement / method.
+		if xpb, ok := xhttp["xPaddingBytes"].(string); ok && len(xpb) > 0 {
+			obj["x_padding_bytes"] = xpb
+		}
+		if obfs, ok := xhttp["xPaddingObfsMode"].(bool); ok && obfs {
+			obj["xPaddingObfsMode"] = true
+			for _, field := range []string{"xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"} {
+				if v, ok := xhttp[field].(string); ok && len(v) > 0 {
+					obj[field] = v
+				}
+			}
+		}
 	}
 	security, _ := stream["security"].(string)
 	obj["tls"] = security
@@ -405,7 +422,8 @@ func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
 			headers, _ := xhttp["headers"].(map[string]any)
 			params["host"] = searchHost(headers)
 		}
-		params["mode"] = xhttp["mode"].(string)
+		params["mode"], _ = xhttp["mode"].(string)
+		applyXhttpPaddingParams(xhttp, params)
 	}
 	security, _ := stream["security"].(string)
 	if security == "tls" {
@@ -601,7 +619,8 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 			headers, _ := xhttp["headers"].(map[string]any)
 			params["host"] = searchHost(headers)
 		}
-		params["mode"] = xhttp["mode"].(string)
+		params["mode"], _ = xhttp["mode"].(string)
+		applyXhttpPaddingParams(xhttp, params)
 	}
 	security, _ := stream["security"].(string)
 	if security == "tls" {
@@ -800,7 +819,8 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 			headers, _ := xhttp["headers"].(map[string]any)
 			params["host"] = searchHost(headers)
 		}
-		params["mode"] = xhttp["mode"].(string)
+		params["mode"], _ = xhttp["mode"].(string)
+		applyXhttpPaddingParams(xhttp, params)
 	}
 
 	security, _ := stream["security"].(string)
@@ -881,6 +901,116 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 	// Set the new query values on the URL
 	url.RawQuery = q.Encode()
 
+	url.Fragment = s.genRemark(inbound, email, "")
+	return url.String()
+}
+
+func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) string {
+	if inbound.Protocol != model.Hysteria {
+		return ""
+	}
+	var stream map[string]interface{}
+	json.Unmarshal([]byte(inbound.StreamSettings), &stream)
+	clients, _ := s.inboundService.GetClients(inbound)
+	clientIndex := -1
+	for i, client := range clients {
+		if client.Email == email {
+			clientIndex = i
+			break
+		}
+	}
+	auth := clients[clientIndex].Auth
+	params := make(map[string]string)
+
+	params["security"] = "tls"
+	tlsSetting, _ := stream["tlsSettings"].(map[string]interface{})
+	alpns, _ := tlsSetting["alpn"].([]interface{})
+	var alpn []string
+	for _, a := range alpns {
+		alpn = append(alpn, a.(string))
+	}
+	if len(alpn) > 0 {
+		params["alpn"] = strings.Join(alpn, ",")
+	}
+	if sniValue, ok := searchKey(tlsSetting, "serverName"); ok {
+		params["sni"], _ = sniValue.(string)
+	}
+
+	tlsSettings, _ := searchKey(tlsSetting, "settings")
+	if tlsSetting != nil {
+		if fpValue, ok := searchKey(tlsSettings, "fingerprint"); ok {
+			params["fp"], _ = fpValue.(string)
+		}
+		if insecure, ok := searchKey(tlsSettings, "allowInsecure"); ok {
+			if insecure.(bool) {
+				params["insecure"] = "1"
+			}
+		}
+	}
+
+	// salamander obfs (Hysteria2). The panel-side link generator already
+	// emits these; keep the subscription output in sync so a client has
+	// the obfs password to match the server.
+	if finalmask, ok := stream["finalmask"].(map[string]interface{}); ok {
+		if udpMasks, ok := finalmask["udp"].([]interface{}); ok {
+			for _, m := range udpMasks {
+				mask, _ := m.(map[string]interface{})
+				if mask == nil || mask["type"] != "salamander" {
+					continue
+				}
+				settings, _ := mask["settings"].(map[string]interface{})
+				if pw, ok := settings["password"].(string); ok && pw != "" {
+					params["obfs"] = "salamander"
+					params["obfs-password"] = pw
+					break
+				}
+			}
+		}
+	}
+
+	var settings map[string]interface{}
+	json.Unmarshal([]byte(inbound.Settings), &settings)
+	version, _ := settings["version"].(float64)
+	protocol := "hysteria2"
+	if int(version) == 1 {
+		protocol = "hysteria"
+	}
+
+	// Fan out one link per External Proxy entry if any. Previously this
+	// generator ignored `externalProxy` entirely, so the link kept the
+	// server's own IP/port even when the admin configured an alternate
+	// endpoint (e.g. a CDN hostname + port that forwards to the node).
+	// Matches the behaviour of genVlessLink / genTrojanLink / ….
+	externalProxies, _ := stream["externalProxy"].([]interface{})
+	if len(externalProxies) > 0 {
+		links := make([]string, 0, len(externalProxies))
+		for _, externalProxy := range externalProxies {
+			ep, _ := externalProxy.(map[string]interface{})
+			dest, _ := ep["dest"].(string)
+			epPort := int(ep["port"].(float64))
+			epRemark, _ := ep["remark"].(string)
+
+			link := fmt.Sprintf("%s://%s@%s:%d", protocol, auth, dest, epPort)
+			u, _ := url.Parse(link)
+			q := u.Query()
+			for k, v := range params {
+				q.Add(k, v)
+			}
+			u.RawQuery = q.Encode()
+			u.Fragment = s.genRemark(inbound, email, epRemark)
+			links = append(links, u.String())
+		}
+		return strings.Join(links, "\n")
+	}
+
+	// No external proxy configured — fall back to the request host.
+	link := fmt.Sprintf("%s://%s@%s:%d", protocol, auth, s.address, inbound.Port)
+	url, _ := url.Parse(link)
+	q := url.Query()
+	for k, v := range params {
+		q.Add(k, v)
+	}
+	url.RawQuery = q.Encode()
 	url.Fragment = s.genRemark(inbound, email, "")
 	return url.String()
 }
@@ -991,6 +1121,59 @@ func searchKey(data any, key string) (any, bool) {
 	return nil, false
 }
 
+// applyXhttpPaddingParams copies the xPadding* fields from an xhttpSettings
+// map into the URL query params of a vless:// / trojan:// / ss:// link.
+//
+// Before this helper existed, only path / host / mode were propagated,
+// so a server configured with a non-default xPaddingBytes (e.g. 80-600)
+// or with xPaddingObfsMode=true + custom xPaddingKey / xPaddingHeader
+// would silently diverge from the client: the client kept defaults,
+// hit the server, and was rejected by its padding validation
+// ("invalid padding" in the inbound log) — the client-visible symptom
+// was "xhttp doesn't connect" on OpenWRT / sing-box.
+//
+// Two encodings are written so every popular client can read at least one:
+//
+//   - x_padding_bytes=<range>  — flat param, understood by sing-box and its
+//     derivatives (Podkop, OpenWRT sing-box, Karing, NekoBox, …).
+//   - extra=<url-encoded-json> — full xhttp settings blob, which is how
+//     xray-core clients (v2rayNG, Happ, Furious, Exclave, …) pick up the
+//     obfs-mode key / header / placement / method.
+//
+// Anything that doesn't map to a non-empty value is skipped, so simple
+// inbounds (no custom padding) produce exactly the same URL as before.
+func applyXhttpPaddingParams(xhttp map[string]any, params map[string]string) {
+	if xhttp == nil {
+		return
+	}
+
+	if xpb, ok := xhttp["xPaddingBytes"].(string); ok && len(xpb) > 0 {
+		params["x_padding_bytes"] = xpb
+	}
+
+	extra := map[string]any{}
+	if xpb, ok := xhttp["xPaddingBytes"].(string); ok && len(xpb) > 0 {
+		extra["xPaddingBytes"] = xpb
+	}
+	if obfs, ok := xhttp["xPaddingObfsMode"].(bool); ok && obfs {
+		extra["xPaddingObfsMode"] = true
+		// The obfs-mode-only fields: only populate the ones the admin
+		// actually set, so xray-core falls back to its own defaults for
+		// the rest instead of seeing spurious empty strings.
+		for _, field := range []string{"xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"} {
+			if v, ok := xhttp[field].(string); ok && len(v) > 0 {
+				extra[field] = v
+			}
+		}
+	}
+
+	if len(extra) > 0 {
+		if b, err := json.Marshal(extra); err == nil {
+			params["extra"] = string(b)
+		}
+	}
+}
+
 func searchHost(headers any) string {
 	data, _ := headers.(map[string]any)
 	for k, v := range data {
@@ -1031,6 +1214,7 @@ type PageData struct {
 	TotalByte    int64
 	SubUrl       string
 	SubJsonUrl   string
+	SubClashUrl  string
 	Result       []string
 }
 
@@ -1080,29 +1264,25 @@ func (s *SubService) ResolveRequest(c *gin.Context) (scheme string, host string,
 
 // BuildURLs constructs absolute subscription and JSON subscription URLs for a given subscription ID.
 // It prioritizes configured URIs, then individual settings, and finally falls back to request-derived components.
-func (s *SubService) BuildURLs(scheme, hostWithPort, subPath, subJsonPath, subId string) (subURL, subJsonURL string) {
-	// Input validation
+func (s *SubService) BuildURLs(scheme, hostWithPort, subPath, subJsonPath, subClashPath, subId string) (subURL, subJsonURL, subClashURL string) {
 	if subId == "" {
-		return "", ""
+		return "", "", ""
 	}
 
-	// Get configured URIs first (highest priority)
 	configuredSubURI, _ := s.settingService.GetSubURI()
 	configuredSubJsonURI, _ := s.settingService.GetSubJsonURI()
+	configuredSubClashURI, _ := s.settingService.GetSubClashURI()
 
-	// Determine base scheme and host (cached to avoid duplicate calls)
 	var baseScheme, baseHostWithPort string
-	if configuredSubURI == "" || configuredSubJsonURI == "" {
+	if configuredSubURI == "" || configuredSubJsonURI == "" || configuredSubClashURI == "" {
 		baseScheme, baseHostWithPort = s.getBaseSchemeAndHost(scheme, hostWithPort)
 	}
 
-	// Build subscription URL
 	subURL = s.buildSingleURL(configuredSubURI, baseScheme, baseHostWithPort, subPath, subId)
-
-	// Build JSON subscription URL
 	subJsonURL = s.buildSingleURL(configuredSubJsonURI, baseScheme, baseHostWithPort, subJsonPath, subId)
+	subClashURL = s.buildSingleURL(configuredSubClashURI, baseScheme, baseHostWithPort, subClashPath, subId)
 
-	return subURL, subJsonURL
+	return subURL, subJsonURL, subClashURL
 }
 
 // getBaseSchemeAndHost determines the base scheme and host from settings or falls back to request values
@@ -1149,7 +1329,7 @@ func (s *SubService) joinPathWithID(basePath, subId string) string {
 
 // BuildPageData parses header and prepares the template view model.
 // BuildPageData constructs page data for rendering the subscription information page.
-func (s *SubService) BuildPageData(subId string, hostHeader string, traffic xray.ClientTraffic, lastOnline int64, subs []string, subURL, subJsonURL string, basePath string) PageData {
+func (s *SubService) BuildPageData(subId string, hostHeader string, traffic xray.ClientTraffic, lastOnline int64, subs []string, subURL, subJsonURL, subClashURL string, basePath string) PageData {
 	download := common.FormatTraffic(traffic.Down)
 	upload := common.FormatTraffic(traffic.Up)
 	total := "∞"
@@ -1183,6 +1363,7 @@ func (s *SubService) BuildPageData(subId string, hostHeader string, traffic xray
 		TotalByte:    traffic.Total,
 		SubUrl:       subURL,
 		SubJsonUrl:   subJsonURL,
+		SubClashUrl:  subClashURL,
 		Result:       subs,
 	}
 }

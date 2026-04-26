@@ -12,10 +12,10 @@ import (
 	"path"
 	"slices"
 
-	"github.com/helloandworlder/sx-ui/v2/config"
-	"github.com/helloandworlder/sx-ui/v2/database/model"
-	"github.com/helloandworlder/sx-ui/v2/util/crypto"
-	"github.com/helloandworlder/sx-ui/v2/xray"
+	"github.com/mhsanaei/3x-ui/v2/config"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/util/crypto"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -38,12 +38,7 @@ func initModels() error {
 		&model.InboundClientIps{},
 		&xray.ClientTraffic{},
 		&model.HistoryOfSeeders{},
-		// sx-ui extensions
-		&model.ConfigSequence{},
-		&model.ClientRateLimit{},
-		&model.Outbound{},
-		&model.RoutingRule{},
-		&model.NodeMeta{},
+		&model.CustomGeoResource{},
 	}
 	for _, model := range models {
 		if err := db.AutoMigrate(model); err != nil {
@@ -118,16 +113,6 @@ func runSeeders(isUsersEmpty bool) error {
 	return nil
 }
 
-// initConfigSequence ensures the singleton ConfigSequence row exists.
-func initConfigSequence() error {
-	var count int64
-	db.Model(&model.ConfigSequence{}).Count(&count)
-	if count == 0 {
-		return db.Create(&model.ConfigSequence{Id: 1, Seq: 0}).Error
-	}
-	return nil
-}
-
 // isTableEmpty returns true if the named table contains zero rows.
 func isTableEmpty(tableName string) (bool, error) {
 	var count int64
@@ -171,9 +156,6 @@ func InitDB(dbPath string) error {
 	if err := initUser(); err != nil {
 		return err
 	}
-	if err := initConfigSequence(); err != nil {
-		return err
-	}
 	return runSeeders(isUsersEmpty)
 }
 
@@ -194,9 +176,8 @@ func GetDB() *gorm.DB {
 	return db
 }
 
-// IsNotFound checks if the given error is a GORM record not found error.
 func IsNotFound(err error) bool {
-	return err == gorm.ErrRecordNotFound
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 // IsSQLiteDB checks if the given file is a valid SQLite database by reading its signature.

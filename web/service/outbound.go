@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/helloandworlder/sx-ui/v2/config"
-	"github.com/helloandworlder/sx-ui/v2/database"
-	"github.com/helloandworlder/sx-ui/v2/database/model"
-	"github.com/helloandworlder/sx-ui/v2/logger"
-	"github.com/helloandworlder/sx-ui/v2/util/common"
-	"github.com/helloandworlder/sx-ui/v2/util/json_util"
-	"github.com/helloandworlder/sx-ui/v2/xray"
+	"github.com/mhsanaei/3x-ui/v2/config"
+	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/util/json_util"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"gorm.io/gorm"
 )

@@ -3,11 +3,11 @@ package service
 import (
 	"errors"
 
-	"github.com/helloandworlder/sx-ui/v2/database"
-	"github.com/helloandworlder/sx-ui/v2/database/model"
-	"github.com/helloandworlder/sx-ui/v2/logger"
-	"github.com/helloandworlder/sx-ui/v2/util/crypto"
-	ldaputil "github.com/helloandworlder/sx-ui/v2/util/ldap"
+	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/crypto"
+	ldaputil "github.com/mhsanaei/3x-ui/v2/util/ldap"
 	"github.com/xlzd/gotp"
 	"gorm.io/gorm"
 )

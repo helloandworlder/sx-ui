@@ -3,8 +3,8 @@
 package job
 
 import (
-	"github.com/helloandworlder/sx-ui/v2/logger"
-	"github.com/helloandworlder/sx-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/web/service"
 )
 
 // CheckXrayRunningJob monitors Xray process health and restarts it if it crashes.

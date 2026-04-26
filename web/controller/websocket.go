@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/helloandworlder/sx-ui/v2/logger"
-	"github.com/helloandworlder/sx-ui/v2/util/common"
-	"github.com/helloandworlder/sx-ui/v2/web/session"
-	"github.com/helloandworlder/sx-ui/v2/web/websocket"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/web/session"
+	"github.com/mhsanaei/3x-ui/v2/web/websocket"
 
 	"github.com/gin-gonic/gin"
 	ws "github.com/gorilla/websocket"
@@ -30,8 +30,10 @@ const (
 )
 
 var upgrader = ws.Upgrader{
-	ReadBufferSize:  4096, // Increased from 1024 for better performance
-	WriteBufferSize: 4096, // Increased from 1024 for better performance
+	ReadBufferSize:    32768,
+	WriteBufferSize:   32768,
+	EnableCompression: true, // Negotiate permessage-deflate compression if the client supports it
+
 	CheckOrigin: func(r *http.Request) bool {
 		// Check origin for security
 		origin := r.Header.Get("Origin")
