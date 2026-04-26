@@ -12,10 +12,10 @@ import (
 	"path"
 	"slices"
 
-	"github.com/mhsanaei/3x-ui/v2/config"
-	"github.com/mhsanaei/3x-ui/v2/database/model"
-	"github.com/mhsanaei/3x-ui/v2/util/crypto"
-	"github.com/mhsanaei/3x-ui/v2/xray"
+	"github.com/helloandworlder/sx-ui/v2/config"
+	"github.com/helloandworlder/sx-ui/v2/database/model"
+	"github.com/helloandworlder/sx-ui/v2/util/crypto"
+	"github.com/helloandworlder/sx-ui/v2/xray"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -39,6 +39,12 @@ func initModels() error {
 		&xray.ClientTraffic{},
 		&model.HistoryOfSeeders{},
 		&model.CustomGeoResource{},
+		// sx-ui extensions
+		&model.ConfigSequence{},
+		&model.ClientRateLimit{},
+		&model.Outbound{},
+		&model.RoutingRule{},
+		&model.NodeMeta{},
 	}
 	for _, model := range models {
 		if err := db.AutoMigrate(model); err != nil {
@@ -120,6 +126,17 @@ func isTableEmpty(tableName string) (bool, error) {
 	return count == 0, err
 }
 
+// initConfigSequence ensures the singleton ConfigSequence row exists.
+// sx-ui extension: GoSea polls this row to detect node-side config drift.
+func initConfigSequence() error {
+	var count int64
+	db.Model(&model.ConfigSequence{}).Count(&count)
+	if count == 0 {
+		return db.Create(&model.ConfigSequence{Id: 1, Seq: 0}).Error
+	}
+	return nil
+}
+
 // InitDB sets up the database connection, migrates models, and runs seeders.
 func InitDB(dbPath string) error {
 	dir := path.Dir(dbPath)
@@ -154,6 +171,9 @@ func InitDB(dbPath string) error {
 	}
 
 	if err := initUser(); err != nil {
+		return err
+	}
+	if err := initConfigSequence(); err != nil {
 		return err
 	}
 	return runSeeders(isUsersEmpty)

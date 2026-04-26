@@ -2,12 +2,20 @@ package xray
 
 import (
 	"bytes"
+	"encoding/json"
 
-	"github.com/mhsanaei/3x-ui/v2/util/json_util"
+	"github.com/helloandworlder/sx-ui/v2/util/json_util"
 )
 
 // Config represents the complete Xray configuration structure.
 // It contains all sections of an Xray config file including inbounds, outbounds, routing, etc.
+// RateLimitEntry is an sx-core extension: per-user bandwidth limit injected into Xray config.
+type RateLimitEntry struct {
+	Email      string `json:"email"`
+	EgressBps  int64  `json:"egressBps"`
+	IngressBps int64  `json:"ingressBps"`
+}
+
 type Config struct {
 	LogConfig        json_util.RawMessage `json:"log"`
 	RouterConfig     json_util.RawMessage `json:"routing"`
@@ -23,6 +31,8 @@ type Config struct {
 	Observatory      json_util.RawMessage `json:"observatory"`
 	BurstObservatory json_util.RawMessage `json:"burstObservatory"`
 	Metrics          json_util.RawMessage `json:"metrics"`
+	// sx-core extension: rate limits loaded by Xray on startup
+	RateLimits []RateLimitEntry `json:"rateLimits,omitempty"`
 }
 
 // Equals compares two Config instances for deep equality.
@@ -69,4 +79,39 @@ func (c *Config) Equals(other *Config) bool {
 		return false
 	}
 	return true
+}
+
+func (c *Config) EnsureAPIServices(required ...string) {
+	if len(c.API) == 0 || len(required) == 0 {
+		return
+	}
+
+	var api map[string]any
+	if err := json.Unmarshal(c.API, &api); err != nil || api == nil {
+		return
+	}
+
+	rawServices, _ := api["services"].([]any)
+	existing := make(map[string]bool, len(rawServices))
+	for _, service := range rawServices {
+		if name, ok := service.(string); ok {
+			existing[name] = true
+		}
+	}
+
+	changed := false
+	for _, service := range required {
+		if !existing[service] {
+			rawServices = append(rawServices, service)
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+
+	api["services"] = rawServices
+	if data, err := json.Marshal(api); err == nil {
+		c.API = data
+	}
 }

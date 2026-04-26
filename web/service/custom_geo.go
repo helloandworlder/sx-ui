@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mhsanaei/3x-ui/v2/config"
-	"github.com/mhsanaei/3x-ui/v2/database"
-	"github.com/mhsanaei/3x-ui/v2/database/model"
-	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/helloandworlder/sx-ui/v2/config"
+	"github.com/helloandworlder/sx-ui/v2/database"
+	"github.com/helloandworlder/sx-ui/v2/database/model"
+	"github.com/helloandworlder/sx-ui/v2/logger"
 )
 
 const (

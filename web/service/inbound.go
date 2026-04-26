@@ -2105,6 +2105,16 @@ func (s *InboundService) ResetClientTrafficByEmail(clientEmail string) error {
 	return nil
 }
 
+func (s *InboundService) ResetInboundTraffic(id int) error {
+	db := database.GetDB()
+
+	result := db.Model(model.Inbound{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"up": 0, "down": 0})
+
+	return result.Error
+}
+
 func (s *InboundService) ResetClientTraffic(id int, clientEmail string) (bool, error) {
 	needRestart := false
 

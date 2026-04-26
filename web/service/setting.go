@@ -63,6 +63,9 @@ var defaultValueMap = map[string]string{
 	"twoFactorToken":              "",
 	"subEnable":                   "true",
 	"subJsonEnable":               "false",
+	"subClashEnable":              "true",
+	"subClashPath":                "/clash/",
+	"subClashURI":                 "",
 	"subTitle":                    "",
 	"subSupportUrl":               "",
 	"subProfileUrl":               "",
@@ -87,6 +90,7 @@ var defaultValueMap = map[string]string{
 	"subJsonRules":                "",
 	"datepicker":                  "gregorian",
 	"warp":                        "",
+	"nord":                        "",
 	"externalTrafficInformEnable": "false",
 	"externalTrafficInformURI":    "",
 	"xrayOutboundTestUrl":         "https://www.google.com/generate_204",
@@ -849,6 +853,26 @@ func (s *SettingService) GetLdapDefaultExpiryDays() (int, error) {
 
 func (s *SettingService) GetLdapDefaultLimitIP() (int, error) {
 	return s.getInt("ldapDefaultLimitIP")
+}
+
+func (s *SettingService) GetNord() (string, error) {
+	return s.getString("nord")
+}
+
+func (s *SettingService) SetNord(data string) error {
+	return s.setString("nord", data)
+}
+
+func (s *SettingService) GetSubClashEnable() (bool, error) {
+	return s.getBool("subClashEnable")
+}
+
+func (s *SettingService) GetSubClashPath() (string, error) {
+	return s.getString("subClashPath")
+}
+
+func (s *SettingService) GetSubClashURI() (string, error) {
+	return s.getString("subClashURI")
 }
 
 func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting) error {
