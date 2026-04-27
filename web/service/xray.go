@@ -128,6 +128,46 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		// get settings clients
 		settings := map[string]any{}
 		json.Unmarshal([]byte(inbound.Settings), &settings)
+		if inbound.Protocol == "http" || inbound.Protocol == "socks" || inbound.Protocol == "mixed" {
+			accounts, ok := settings["accounts"].([]any)
+			if ok {
+				clientStats := inbound.ClientStats
+				enabledByEmail := make(map[string]bool, len(clientStats))
+				for _, clientTraffic := range clientStats {
+					enabledByEmail[clientTraffic.Email] = clientTraffic.Enable
+				}
+
+				finalAccounts := make([]any, 0, len(accounts))
+				for _, account := range accounts {
+					c, ok := account.(map[string]any)
+					if !ok {
+						continue
+					}
+					email, _ := c["email"].(string)
+					if email == "" {
+						email, _ = c["user"].(string)
+					}
+					if enabled, exists := enabledByEmail[email]; exists && !enabled {
+						continue
+					}
+					if rawEnable, ok := c["enable"].(bool); ok && !rawEnable {
+						continue
+					}
+					finalAccounts = append(finalAccounts, map[string]any{
+						"user":  c["user"],
+						"pass":  c["pass"],
+						"email": email,
+					})
+				}
+
+				settings["accounts"] = finalAccounts
+				modifiedSettings, err := json.MarshalIndent(settings, "", "  ")
+				if err != nil {
+					return nil, err
+				}
+				inbound.Settings = string(modifiedSettings)
+			}
+		}
 		clients, ok := settings["clients"].([]any)
 		if ok {
 			// check users active or not

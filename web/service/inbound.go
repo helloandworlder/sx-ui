@@ -109,6 +109,10 @@ func normalizeSettingsClients(protocol model.Protocol, settings map[string]any) 
 				"password":   strings.TrimSpace(fmt.Sprint(account["pass"])),
 				"enable":     enable,
 				"comment":    strings.TrimSpace(fmt.Sprint(account["comment"])),
+				"limitIp":    asInt64(account["limitIp"]),
+				"totalGB":    asInt64(account["totalGB"]),
+				"expiryTime": asInt64(account["expiryTime"]),
+				"reset":      asInt64(account["reset"]),
 				"egressBps":  asInt64(account["egressBps"]),
 				"ingressBps": asInt64(account["ingressBps"]),
 				"subId":      strings.TrimSpace(fmt.Sprint(account["subId"])),
@@ -781,26 +785,30 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	}
 
 	needRestart := false
-	s.xrayApi.Init(p.GetAPIPort())
-	if s.xrayApi.DelInbound(tag) == nil {
-		logger.Debug("Old inbound deleted by api:", tag)
-	}
-	if inbound.Enable {
-		inboundJson, err2 := json.MarshalIndent(oldInbound.GenXrayInboundConfig(), "", "  ")
-		if err2 != nil {
-			logger.Debug("Unable to marshal updated inbound config:", err2)
-			needRestart = true
-		} else {
-			err2 = s.xrayApi.AddInbound(inboundJson)
-			if err2 == nil {
-				logger.Debug("Updated inbound added by api:", oldInbound.Tag)
-			} else {
-				logger.Debug("Unable to update inbound by api:", err2)
+	if p == nil || !p.IsRunning() {
+		needRestart = true
+	} else {
+		s.xrayApi.Init(p.GetAPIPort())
+		if s.xrayApi.DelInbound(tag) == nil {
+			logger.Debug("Old inbound deleted by api:", tag)
+		}
+		if inbound.Enable {
+			inboundJson, err2 := json.MarshalIndent(oldInbound.GenXrayInboundConfig(), "", "  ")
+			if err2 != nil {
+				logger.Debug("Unable to marshal updated inbound config:", err2)
 				needRestart = true
+			} else {
+				err2 = s.xrayApi.AddInbound(inboundJson)
+				if err2 == nil {
+					logger.Debug("Updated inbound added by api:", oldInbound.Tag)
+				} else {
+					logger.Debug("Unable to update inbound by api:", err2)
+					needRestart = true
+				}
 			}
 		}
+		s.xrayApi.Close()
 	}
-	s.xrayApi.Close()
 	if rateLimitRestart {
 		needRestart = true
 	}
@@ -1652,6 +1660,13 @@ func (s *InboundService) MigrationRemoveOrphanedTraffics() {
 			SELECT JSON_EXTRACT(client.value, '$.email')
 			FROM inbounds,
 				JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
+			UNION
+			SELECT COALESCE(
+				JSON_EXTRACT(account.value, '$.email'),
+				JSON_EXTRACT(account.value, '$.user')
+			)
+			FROM inbounds,
+				JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.accounts')) AS account
 		)
 	`)
 }

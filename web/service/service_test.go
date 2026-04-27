@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -197,7 +198,7 @@ func TestInboundService_GetClientByEmailSupportsAccountProtocols(t *testing.T) {
 		Listen:         "0.0.0.0",
 		Port:           20084,
 		Protocol:       model.Socks,
-		Settings:       `{"accounts":[{"user":"u","pass":"p","email":"line@example.com","enable":true,"comment":"test","egressBps":125000,"ingressBps":125000}]}`,
+		Settings:       `{"accounts":[{"user":"u","pass":"p","email":"line@example.com","enable":true,"comment":"test","totalGB":107374182400,"expiryTime":1893456000000,"reset":30,"egressBps":125000,"ingressBps":125000}]}`,
 		StreamSettings: `{}`,
 		Tag:            "in-socks",
 		Sniffing:       `{"enabled":false}`,
@@ -229,6 +230,71 @@ func TestInboundService_GetClientByEmailSupportsAccountProtocols(t *testing.T) {
 	}
 	if client.EgressBps != 125000 || client.IngressBps != 125000 {
 		t.Fatalf("unexpected account rate limits: %d/%d", client.EgressBps, client.IngressBps)
+	}
+	if client.TotalGB != 107374182400 || client.ExpiryTime != 1893456000000 || client.Reset != 30 {
+		t.Fatalf("unexpected account entitlement: total=%d expiry=%d reset=%d", client.TotalGB, client.ExpiryTime, client.Reset)
+	}
+}
+
+func TestXrayService_GetXrayConfigFiltersDisabledAccountProtocols(t *testing.T) {
+	dbPath := setupTestDB(t)
+	defer teardownTestDB(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20084,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","accounts":[{"user":"active","pass":"p1","email":"active@example.com","enable":true,"totalGB":107374182400,"expiryTime":1893456000000},{"user":"expired","pass":"p2","email":"expired@example.com","enable":true,"totalGB":107374182400,"expiryTime":1}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&xray.ClientTraffic{
+		InboundId: inbound.Id,
+		Email:     "active@example.com",
+		Enable:    true,
+		Total:     107374182400,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&xray.ClientTraffic{
+		InboundId:  inbound.Id,
+		Email:      "expired@example.com",
+		Enable:     false,
+		Total:      107374182400,
+		ExpiryTime: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	xraySvc := XrayService{}
+	cfg, err := xraySvc.GetXrayConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.InboundConfigs) == 0 {
+		t.Fatal("expected generated inbounds")
+	}
+	var settings struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal(cfg.InboundConfigs[len(cfg.InboundConfigs)-1].Settings, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Accounts) != 1 {
+		t.Fatalf("expected only one active account, got %d: %#v", len(settings.Accounts), settings.Accounts)
+	}
+	if settings.Accounts[0]["email"] != "active@example.com" {
+		t.Fatalf("unexpected account left in config: %#v", settings.Accounts[0])
+	}
+	if _, ok := settings.Accounts[0]["totalGB"]; ok {
+		t.Fatalf("runtime account should not include panel-only entitlement fields: %#v", settings.Accounts[0])
 	}
 }
 

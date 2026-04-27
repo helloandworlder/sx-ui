@@ -282,18 +282,7 @@ type AddClientRequest struct {
 	// VMess/VLESS/Trojan fields
 	Clients []model.Client `json:"clients"`
 	// HTTP/Socks5/Mixed fields
-	Accounts []struct {
-		User       string `json:"user"`
-		Pass       string `json:"pass"`
-		Email      string `json:"email"` // UUIDv7 internal identifier
-		Enable     *bool  `json:"enable"`
-		Comment    string `json:"comment"`
-		EgressBps  int64  `json:"egressBps"`
-		IngressBps int64  `json:"ingressBps"`
-		SubID      string `json:"subId"`
-		EgressRate *rateLimitInput `json:"egressRate,omitempty"`
-		IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
-	} `json:"accounts"`
+	Accounts []inboundAccountPayload `json:"accounts"`
 }
 
 type rateLimitInput struct {
@@ -302,18 +291,22 @@ type rateLimitInput struct {
 }
 
 type inboundAccountPayload struct {
-	User       string `json:"user"`
-	Pass       string `json:"pass"`
-	Email      string `json:"email"`
-	Enable     *bool  `json:"enable"`
-	Comment    string `json:"comment"`
-	EgressBps  int64  `json:"egressBps"`
-	IngressBps int64  `json:"ingressBps"`
-	SubID      string `json:"subId"`
-	EgressRate *rateLimitInput `json:"egressRate,omitempty"`
+	User        string          `json:"user"`
+	Pass        string          `json:"pass"`
+	Email       string          `json:"email"`
+	Enable      *bool           `json:"enable"`
+	Comment     string          `json:"comment"`
+	LimitIP     *int            `json:"limitIp"`
+	TotalGB     *int64          `json:"totalGB"`
+	ExpiryTime  *int64          `json:"expiryTime"`
+	Reset       *int            `json:"reset"`
+	EgressBps   int64           `json:"egressBps"`
+	IngressBps  int64           `json:"ingressBps"`
+	SubID       string          `json:"subId"`
+	EgressRate  *rateLimitInput `json:"egressRate,omitempty"`
 	IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
-	CreatedAt  int64  `json:"created_at,omitempty"`
-	UpdatedAt  int64  `json:"updated_at,omitempty"`
+	CreatedAt   int64           `json:"created_at,omitempty"`
+	UpdatedAt   int64           `json:"updated_at,omitempty"`
 }
 
 func rateLimitFactor(unit string) float64 {
@@ -400,6 +393,42 @@ func buildDynamicAccountUser(user, pass, email string) map[string]any {
 }
 
 func boolOrDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func numericInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return 0
+		}
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n
+	default:
+		return 0
+	}
+}
+
+func intValueOrDefault(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func int64ValueOrDefault(value *int64, fallback int64) int64 {
 	if value == nil {
 		return fallback
 	}
@@ -500,18 +529,19 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 		if len(req.Accounts) == 0 && len(req.Clients) > 0 {
 			// Convert from clients format: use email as both user and pass
 			for _, cl := range req.Clients {
-				req.Accounts = append(req.Accounts, struct {
-					User       string `json:"user"`
-					Pass       string `json:"pass"`
-					Email      string `json:"email"`
-					Enable     *bool  `json:"enable"`
-					Comment    string `json:"comment"`
-					EgressBps  int64  `json:"egressBps"`
-					IngressBps int64  `json:"ingressBps"`
-					SubID      string `json:"subId"`
-					EgressRate *rateLimitInput `json:"egressRate,omitempty"`
-					IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
-				}{User: cl.Email, Pass: cl.Email, Email: cl.Email})
+				limitIP := cl.LimitIP
+				totalGB := cl.TotalGB
+				expiryTime := cl.ExpiryTime
+				reset := cl.Reset
+				req.Accounts = append(req.Accounts, inboundAccountPayload{
+					User:       cl.Email,
+					Pass:       cl.Email,
+					Email:      cl.Email,
+					LimitIP:    &limitIP,
+					TotalGB:    &totalGB,
+					ExpiryTime: &expiryTime,
+					Reset:      &reset,
+				})
 			}
 		}
 		// Merge new accounts into existing inbound settings
@@ -526,7 +556,9 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 			existAccounts = append(existAccounts, map[string]any{
 				"user": acc.User, "pass": acc.Pass, "email": acc.Email,
 				"enable": enable, "comment": acc.Comment,
-				"subId": acc.SubID,
+				"limitIp": intValueOrDefault(acc.LimitIP, 0), "totalGB": int64ValueOrDefault(acc.TotalGB, 0),
+				"expiryTime": int64ValueOrDefault(acc.ExpiryTime, 0), "reset": intValueOrDefault(acc.Reset, 0),
+				"subId":     acc.SubID,
 				"egressBps": egressBps, "ingressBps": ingressBps,
 				"created_at": nowTs, "updated_at": nowTs,
 			})
@@ -639,6 +671,7 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			item, _ := raw.(map[string]any)
 			accEmail, _ := item["email"].(string)
 			accUser, _ := item["user"].(string)
+			accPass, _ := item["pass"].(string)
 			if accEmail != email && accUser != email {
 				continue
 			}
@@ -656,15 +689,32 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			}
 			oldEnabled = enable
 			enable = boolOrDefault(account.Enable, enable)
+			if account.User == "" {
+				account.User = accUser
+			}
+			if account.Pass == "" {
+				account.Pass = accPass
+			}
+			if account.Comment == "" {
+				if existingComment, ok := item["comment"].(string); ok {
+					account.Comment = existingComment
+				}
+			}
 			if existingSubID, ok := item["subId"].(string); ok && account.SubID == "" {
 				account.SubID = existingSubID
 			}
+			totalGB := int64ValueOrDefault(account.TotalGB, numericInt64(item["totalGB"]))
+			expiryTime := int64ValueOrDefault(account.ExpiryTime, numericInt64(item["expiryTime"]))
+			reset := intValueOrDefault(account.Reset, int(numericInt64(item["reset"])))
+			limitIP := intValueOrDefault(account.LimitIP, int(numericInt64(item["limitIp"])))
 			account.EgressBps = normalizeRateLimitBps(account.EgressBps, account.EgressRate)
 			account.IngressBps = normalizeRateLimitBps(account.IngressBps, account.IngressRate)
 			accounts[idx] = map[string]any{
 				"user": account.User, "pass": account.Pass, "email": account.Email,
 				"enable": enable, "comment": account.Comment,
-				"subId": account.SubID,
+				"limitIp": limitIP, "totalGB": totalGB,
+				"expiryTime": expiryTime, "reset": reset,
+				"subId":     account.SubID,
 				"egressBps": account.EgressBps, "ingressBps": account.IngressBps,
 				"created_at": account.CreatedAt, "updated_at": account.UpdatedAt,
 			}
@@ -1036,9 +1086,9 @@ func (a *RestAPIController) getRateLimit(c *gin.Context) {
 func (a *RestAPIController) setRateLimit(c *gin.Context) {
 	email := c.Param("email")
 	var body struct {
-		EgressBps  int64 `json:"egressBps"`
-		IngressBps int64 `json:"ingressBps"`
-		EgressRate *rateLimitInput `json:"egressRate,omitempty"`
+		EgressBps   int64           `json:"egressBps"`
+		IngressBps  int64           `json:"ingressBps"`
+		EgressRate  *rateLimitInput `json:"egressRate,omitempty"`
 		IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {

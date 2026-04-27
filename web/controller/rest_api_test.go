@@ -242,6 +242,60 @@ func TestAPI_RateLimit_SetGetRemove(t *testing.T) {
 	}
 }
 
+func TestAPI_MixedAccountUpdatePreservesAndClearsEntitlements(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20084,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","accounts":[{"user":"u","pass":"p","email":"line@example.com","enable":true,"comment":"line","limitIp":3,"totalGB":107374182400,"expiryTime":1893456000000,"reset":30,"egressBps":125000,"ingressBps":125000}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := doRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/line@example.com", map[string]any{
+		"email":      "line@example.com",
+		"totalGB":    0,
+		"expiryTime": 0,
+		"reset":      0,
+		"limitIp":    0,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Accounts) != 1 {
+		t.Fatalf("expected one account, got %d", len(settings.Accounts))
+	}
+	account := settings.Accounts[0]
+	if account["user"] != "u" || account["pass"] != "p" {
+		t.Fatalf("expected partial update to preserve credentials, got %#v", account)
+	}
+	if account["totalGB"].(float64) != 0 || account["expiryTime"].(float64) != 0 ||
+		account["reset"].(float64) != 0 || account["limitIp"].(float64) != 0 {
+		t.Fatalf("expected explicit zero entitlement fields, got %#v", account)
+	}
+}
+
 func TestAPI_NodeMeta(t *testing.T) {
 	router, dbPath := setupTestRouter(t)
 	defer teardownRouter(dbPath)
