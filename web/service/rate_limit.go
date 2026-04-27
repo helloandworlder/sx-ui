@@ -30,6 +30,19 @@ func (s *RateLimitService) Get(email string) (*model.ClientRateLimit, error) {
 
 // Set creates or updates the rate limit for the given email.
 func (s *RateLimitService) Set(email string, egressBps, ingressBps int64) (*model.ClientRateLimit, error) {
+	return s.SetWithBurst(email, egressBps, ingressBps, 0, 0, 0, 0)
+}
+
+// SetWithBurst creates or updates the rate limit and burst window for one XrayCore email.
+func (s *RateLimitService) SetWithBurst(
+	email string,
+	egressBps int64,
+	ingressBps int64,
+	burstEgressBps int64,
+	burstIngressBps int64,
+	burstDurationSeconds int64,
+	burstCooldownSeconds int64,
+) (*model.ClientRateLimit, error) {
 	db := database.GetDB()
 	now := time.Now().UnixMilli()
 
@@ -38,10 +51,14 @@ func (s *RateLimitService) Set(email string, egressBps, ingressBps int64) (*mode
 	if err != nil {
 		if database.IsNotFound(err) {
 			rl = model.ClientRateLimit{
-				Email:      email,
-				EgressBps:  egressBps,
-				IngressBps: ingressBps,
-				UpdatedAt:  now,
+				Email:                email,
+				EgressBps:            egressBps,
+				IngressBps:           ingressBps,
+				BurstEgressBps:       burstEgressBps,
+				BurstIngressBps:      burstIngressBps,
+				BurstDurationSeconds: burstDurationSeconds,
+				BurstCooldownSeconds: burstCooldownSeconds,
+				UpdatedAt:            now,
 			}
 			return &rl, db.Create(&rl).Error
 		}
@@ -50,6 +67,10 @@ func (s *RateLimitService) Set(email string, egressBps, ingressBps int64) (*mode
 
 	rl.EgressBps = egressBps
 	rl.IngressBps = ingressBps
+	rl.BurstEgressBps = burstEgressBps
+	rl.BurstIngressBps = burstIngressBps
+	rl.BurstDurationSeconds = burstDurationSeconds
+	rl.BurstCooldownSeconds = burstCooldownSeconds
 	rl.UpdatedAt = now
 	return &rl, db.Save(&rl).Error
 }

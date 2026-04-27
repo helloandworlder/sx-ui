@@ -348,9 +348,13 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if len(allLimits) > 0 {
 		for _, rl := range allLimits {
 			xrayConfig.RateLimits = append(xrayConfig.RateLimits, xray.RateLimitEntry{
-				Email:      rl.Email,
-				EgressBps:  rl.EgressBps,
-				IngressBps: rl.IngressBps,
+				Email:                rl.Email,
+				EgressBps:            rl.EgressBps,
+				IngressBps:           rl.IngressBps,
+				BurstEgressBps:       rl.BurstEgressBps,
+				BurstIngressBps:      rl.BurstIngressBps,
+				BurstDurationSeconds: rl.BurstDurationSeconds,
+				BurstCooldownSeconds: rl.BurstCooldownSeconds,
 			})
 		}
 	}

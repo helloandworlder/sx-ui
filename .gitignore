@@ -37,5 +37,7 @@ x-ui.db
 docker-compose.override.yml
 
 # Ignore .env (Environment Variables) file
-.envsx-ui-bin
+.env
+build/
+sx-ui-bin
 sx-ui-linux-amd64

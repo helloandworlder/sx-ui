@@ -82,12 +82,44 @@ func (s *XrayDynamicService) DynamicAddUser(proto string, inboundTag string, use
 	logger.Infof("gRPC: added user %s to %s", email, inboundTag)
 
 	if egressBps > 0 || ingressBps > 0 {
-		if err := api.SetUserRateLimit(email, egressBps, ingressBps); err != nil {
+		burstEgressBps := dynamicRateLimitInt64(user["burstEgressBps"])
+		burstIngressBps := dynamicRateLimitInt64(user["burstIngressBps"])
+		burstDurationSeconds := dynamicRateLimitInt64(user["burstDurationSeconds"])
+		burstCooldownSeconds := dynamicRateLimitInt64(user["burstCooldownSeconds"])
+		if err := api.SetUserRateLimitWithBurst(
+			email,
+			egressBps,
+			ingressBps,
+			burstEgressBps,
+			burstIngressBps,
+			burstDurationSeconds,
+			burstCooldownSeconds,
+		); err != nil {
 			logger.Warning("gRPC SetUserRateLimit failed:", err)
 			s.XrayService.SetToNeedRestart()
 			return
 		}
-		logger.Infof("gRPC: set ratelimit %s egress=%d bps ingress=%d bps", email, egressBps, ingressBps)
+		logger.Infof("gRPC: set ratelimit %s egress=%d bps ingress=%d bps burstEgress=%d bps burstIngress=%d bps", email, egressBps, ingressBps, burstEgressBps, burstIngressBps)
+	}
+}
+
+func dynamicRateLimitInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
 	}
 }
 
@@ -120,6 +152,19 @@ func (s *XrayDynamicService) DynamicRemoveUser(inboundTag, email string) {
 // This is called independently when only the rate limit changes (not the user).
 // egressBps and ingressBps are in bytes/sec (both directions).
 func (s *XrayDynamicService) DynamicSetRateLimit(email string, egressBps, ingressBps int64) {
+	s.DynamicSetRateLimitWithBurst(email, egressBps, ingressBps, 0, 0, 0, 0)
+}
+
+// DynamicSetRateLimitWithBurst sets or updates the rate limit and burst window for an XrayCore email.
+func (s *XrayDynamicService) DynamicSetRateLimitWithBurst(
+	email string,
+	egressBps int64,
+	ingressBps int64,
+	burstEgressBps int64,
+	burstIngressBps int64,
+	burstDurationSeconds int64,
+	burstCooldownSeconds int64,
+) {
 	api, err := s.getAPI()
 	if err != nil {
 		s.XrayService.SetToNeedRestart()
@@ -127,12 +172,20 @@ func (s *XrayDynamicService) DynamicSetRateLimit(email string, egressBps, ingres
 	}
 	defer api.Close()
 
-	if err := api.SetUserRateLimit(email, egressBps, ingressBps); err != nil {
+	if err := api.SetUserRateLimitWithBurst(
+		email,
+		egressBps,
+		ingressBps,
+		burstEgressBps,
+		burstIngressBps,
+		burstDurationSeconds,
+		burstCooldownSeconds,
+	); err != nil {
 		logger.Warning("gRPC SetUserRateLimit failed:", err)
 		s.XrayService.SetToNeedRestart()
 		return
 	}
-	logger.Infof("gRPC: set ratelimit %s egress=%d bps ingress=%d bps", email, egressBps, ingressBps)
+	logger.Infof("gRPC: set ratelimit %s egress=%d bps ingress=%d bps burstEgress=%d bps burstIngress=%d bps", email, egressBps, ingressBps, burstEgressBps, burstIngressBps)
 }
 
 // DynamicRemoveRateLimit removes the rate limit for a user.

@@ -11,9 +11,13 @@ import (
 // It contains all sections of an Xray config file including inbounds, outbounds, routing, etc.
 // RateLimitEntry is an sx-core extension: per-user bandwidth limit injected into Xray config.
 type RateLimitEntry struct {
-	Email      string `json:"email"`
-	EgressBps  int64  `json:"egressBps"`
-	IngressBps int64  `json:"ingressBps"`
+	Email                string `json:"email"`
+	EgressBps            int64  `json:"egressBps"`
+	IngressBps           int64  `json:"ingressBps"`
+	BurstEgressBps       int64  `json:"burstEgressBps,omitempty"`
+	BurstIngressBps      int64  `json:"burstIngressBps,omitempty"`
+	BurstDurationSeconds int64  `json:"burstDurationSeconds,omitempty"`
+	BurstCooldownSeconds int64  `json:"burstCooldownSeconds,omitempty"`
 }
 
 type Config struct {

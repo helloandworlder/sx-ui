@@ -15,19 +15,19 @@ import (
 	"github.com/helloandworlder/sx-ui/v2/logger"
 	"github.com/helloandworlder/sx-ui/v2/util/common"
 
-	reverseCommand "github.com/xtls/xray-core/app/reverse/command"
-	reverseconf "github.com/xtls/xray-core/app/reverse"
 	"github.com/xtls/xray-core/app/proxyman/command"
 	rateLimitCommand "github.com/xtls/xray-core/app/ratelimit/command"
+	reverseconf "github.com/xtls/xray-core/app/reverse"
+	reverseCommand "github.com/xtls/xray-core/app/reverse/command"
 	routerCommand "github.com/xtls/xray-core/app/router/command"
 	statsService "github.com/xtls/xray-core/app/stats/command"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/infra/conf"
-	"github.com/xtls/xray-core/proxy/shadowsocks"
-	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
 	xrayhttp "github.com/xtls/xray-core/proxy/http"
 	hysteriaAccount "github.com/xtls/xray-core/proxy/hysteria/account"
+	"github.com/xtls/xray-core/proxy/shadowsocks"
+	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
 	xraysocks "github.com/xtls/xray-core/proxy/socks"
 	"github.com/xtls/xray-core/proxy/trojan"
 	"github.com/xtls/xray-core/proxy/vless"
@@ -97,6 +97,18 @@ func (x *XrayAPI) Close() {
 }
 
 func (x *XrayAPI) SetUserRateLimit(email string, egressBps, ingressBps int64) error {
+	return x.SetUserRateLimitWithBurst(email, egressBps, ingressBps, 0, 0, 0, 0)
+}
+
+func (x *XrayAPI) SetUserRateLimitWithBurst(
+	email string,
+	egressBps int64,
+	ingressBps int64,
+	burstEgressBps int64,
+	burstIngressBps int64,
+	burstDurationSeconds int64,
+	burstCooldownSeconds int64,
+) error {
 	if x.RateLimitServiceClient == nil {
 		return common.NewError("xray RateLimitServiceClient is not initialized")
 	}
@@ -104,9 +116,13 @@ func (x *XrayAPI) SetUserRateLimit(email string, egressBps, ingressBps int64) er
 	defer cancel()
 
 	_, err := (*x.RateLimitServiceClient).SetUserRateLimit(ctx, &rateLimitCommand.SetUserRateLimitRequest{
-		Email:      email,
-		EgressBps:  egressBps,
-		IngressBps: ingressBps,
+		Email:                email,
+		EgressBps:            egressBps,
+		IngressBps:           ingressBps,
+		BurstEgressBps:       burstEgressBps,
+		BurstIngressBps:      burstIngressBps,
+		BurstDurationSeconds: burstDurationSeconds,
+		BurstCooldownSeconds: burstCooldownSeconds,
 	})
 	return err
 }

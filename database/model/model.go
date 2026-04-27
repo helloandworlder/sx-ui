@@ -146,11 +146,15 @@ type ConfigSequence struct {
 // ClientRateLimit stores per-client bandwidth limits (bytes/sec).
 // The email field maps 1-to-1 with the Xray client email.
 type ClientRateLimit struct {
-	Id         int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	Email      string `json:"email" gorm:"uniqueIndex"`
-	EgressBps  int64  `json:"egressBps"`  // max egress bytes per second
-	IngressBps int64  `json:"ingressBps"` // max ingress bytes per second
-	UpdatedAt  int64  `json:"updatedAt"`
+	Id                   int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	Email                string `json:"email" gorm:"uniqueIndex"`
+	EgressBps            int64  `json:"egressBps"`            // max egress bytes per second
+	IngressBps           int64  `json:"ingressBps"`           // max ingress bytes per second
+	BurstEgressBps       int64  `json:"burstEgressBps"`       // temporary egress bytes per second
+	BurstIngressBps      int64  `json:"burstIngressBps"`      // temporary ingress bytes per second
+	BurstDurationSeconds int64  `json:"burstDurationSeconds"` // active burst window
+	BurstCooldownSeconds int64  `json:"burstCooldownSeconds"` // cooldown before next burst
+	UpdatedAt            int64  `json:"updatedAt"`
 }
 
 // Outbound represents an Xray outbound configuration.
@@ -192,23 +196,27 @@ type NodeMeta struct {
 
 // Client represents a client configuration for Xray inbounds with traffic limits and settings.
 type Client struct {
-	ID         string `json:"id"`                           // Unique client identifier
-	Security   string `json:"security"`                     // Security method (e.g., "auto", "aes-128-gcm")
-	Method     string `json:"method,omitempty"`             // Cipher / method for multi-user shadowsocks
-	Auth       string `json:"auth,omitempty"`               // Auth secret for hysteria2
-	Password   string `json:"password"`                     // Client password
-	Flow       string `json:"flow"`                         // Flow control (XTLS)
-	Email      string `json:"email"`                        // Client email identifier
-	EgressBps  int64  `json:"egressBps,omitempty"`          // Upload limit in bytes per second
-	IngressBps int64  `json:"ingressBps,omitempty"`         // Download limit in bytes per second
-	LimitIP    int    `json:"limitIp"`                      // IP limit for this client
-	TotalGB    int64  `json:"totalGB" form:"totalGB"`       // Total traffic limit in GB
-	ExpiryTime int64  `json:"expiryTime" form:"expiryTime"` // Expiration timestamp
-	Enable     bool   `json:"enable" form:"enable"`         // Whether the client is enabled
-	TgID       int64  `json:"tgId" form:"tgId"`             // Telegram user ID for notifications
-	SubID      string `json:"subId" form:"subId"`           // Subscription identifier
-	Comment    string `json:"comment" form:"comment"`       // Client comment
-	Reset      int    `json:"reset" form:"reset"`           // Reset period in days
-	CreatedAt  int64  `json:"created_at,omitempty"`         // Creation timestamp
-	UpdatedAt  int64  `json:"updated_at,omitempty"`         // Last update timestamp
+	ID                   string `json:"id"`                             // Unique client identifier
+	Security             string `json:"security"`                       // Security method (e.g., "auto", "aes-128-gcm")
+	Method               string `json:"method,omitempty"`               // Cipher / method for multi-user shadowsocks
+	Auth                 string `json:"auth,omitempty"`                 // Auth secret for hysteria2
+	Password             string `json:"password"`                       // Client password
+	Flow                 string `json:"flow"`                           // Flow control (XTLS)
+	Email                string `json:"email"`                          // Client email identifier
+	EgressBps            int64  `json:"egressBps,omitempty"`            // Upload limit in bytes per second
+	IngressBps           int64  `json:"ingressBps,omitempty"`           // Download limit in bytes per second
+	BurstEgressBps       int64  `json:"burstEgressBps,omitempty"`       // Temporary upload limit in bytes per second
+	BurstIngressBps      int64  `json:"burstIngressBps,omitempty"`      // Temporary download limit in bytes per second
+	BurstDurationSeconds int64  `json:"burstDurationSeconds,omitempty"` // Active burst window
+	BurstCooldownSeconds int64  `json:"burstCooldownSeconds,omitempty"` // Cooldown before next burst
+	LimitIP              int    `json:"limitIp"`                        // IP limit for this client
+	TotalGB              int64  `json:"totalGB" form:"totalGB"`         // Total traffic limit in GB
+	ExpiryTime           int64  `json:"expiryTime" form:"expiryTime"`   // Expiration timestamp
+	Enable               bool   `json:"enable" form:"enable"`           // Whether the client is enabled
+	TgID                 int64  `json:"tgId" form:"tgId"`               // Telegram user ID for notifications
+	SubID                string `json:"subId" form:"subId"`             // Subscription identifier
+	Comment              string `json:"comment" form:"comment"`         // Client comment
+	Reset                int    `json:"reset" form:"reset"`             // Reset period in days
+	CreatedAt            int64  `json:"created_at,omitempty"`           // Creation timestamp
+	UpdatedAt            int64  `json:"updated_at,omitempty"`           // Last update timestamp
 }

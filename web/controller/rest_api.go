@@ -291,22 +291,26 @@ type rateLimitInput struct {
 }
 
 type inboundAccountPayload struct {
-	User        string          `json:"user"`
-	Pass        string          `json:"pass"`
-	Email       string          `json:"email"`
-	Enable      *bool           `json:"enable"`
-	Comment     string          `json:"comment"`
-	LimitIP     *int            `json:"limitIp"`
-	TotalGB     *int64          `json:"totalGB"`
-	ExpiryTime  *int64          `json:"expiryTime"`
-	Reset       *int            `json:"reset"`
-	EgressBps   int64           `json:"egressBps"`
-	IngressBps  int64           `json:"ingressBps"`
-	SubID       string          `json:"subId"`
-	EgressRate  *rateLimitInput `json:"egressRate,omitempty"`
-	IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
-	CreatedAt   int64           `json:"created_at,omitempty"`
-	UpdatedAt   int64           `json:"updated_at,omitempty"`
+	User                 string          `json:"user"`
+	Pass                 string          `json:"pass"`
+	Email                string          `json:"email"`
+	Enable               *bool           `json:"enable"`
+	Comment              string          `json:"comment"`
+	LimitIP              *int            `json:"limitIp"`
+	TotalGB              *int64          `json:"totalGB"`
+	ExpiryTime           *int64          `json:"expiryTime"`
+	Reset                *int            `json:"reset"`
+	EgressBps            int64           `json:"egressBps"`
+	IngressBps           int64           `json:"ingressBps"`
+	BurstEgressBps       int64           `json:"burstEgressBps"`
+	BurstIngressBps      int64           `json:"burstIngressBps"`
+	BurstDurationSeconds int64           `json:"burstDurationSeconds"`
+	BurstCooldownSeconds int64           `json:"burstCooldownSeconds"`
+	SubID                string          `json:"subId"`
+	EgressRate           *rateLimitInput `json:"egressRate,omitempty"`
+	IngressRate          *rateLimitInput `json:"ingressRate,omitempty"`
+	CreatedAt            int64           `json:"created_at,omitempty"`
+	UpdatedAt            int64           `json:"updated_at,omitempty"`
 }
 
 func rateLimitFactor(unit string) float64 {
@@ -373,14 +377,30 @@ func extractRuleTag(ruleJSON string) string {
 	return ""
 }
 
-func (a *RestAPIController) syncAccountRateLimit(email string, egressBps, ingressBps int64) error {
+func (a *RestAPIController) syncAccountRateLimit(
+	email string,
+	egressBps int64,
+	ingressBps int64,
+	burstEgressBps int64,
+	burstIngressBps int64,
+	burstDurationSeconds int64,
+	burstCooldownSeconds int64,
+) error {
 	if strings.TrimSpace(email) == "" {
 		return nil
 	}
 	if egressBps <= 0 && ingressBps <= 0 {
 		return a.rateLimitService.Remove(email)
 	}
-	_, err := a.rateLimitService.Set(email, egressBps, ingressBps)
+	_, err := a.rateLimitService.SetWithBurst(
+		email,
+		egressBps,
+		ingressBps,
+		burstEgressBps,
+		burstIngressBps,
+		burstDurationSeconds,
+		burstCooldownSeconds,
+	)
 	return err
 }
 
@@ -560,9 +580,19 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 				"expiryTime": int64ValueOrDefault(acc.ExpiryTime, 0), "reset": intValueOrDefault(acc.Reset, 0),
 				"subId":     acc.SubID,
 				"egressBps": egressBps, "ingressBps": ingressBps,
+				"burstEgressBps": acc.BurstEgressBps, "burstIngressBps": acc.BurstIngressBps,
+				"burstDurationSeconds": acc.BurstDurationSeconds, "burstCooldownSeconds": acc.BurstCooldownSeconds,
 				"created_at": nowTs, "updated_at": nowTs,
 			})
-			if err := a.syncAccountRateLimit(acc.Email, egressBps, ingressBps); err != nil {
+			if err := a.syncAccountRateLimit(
+				acc.Email,
+				egressBps,
+				ingressBps,
+				acc.BurstEgressBps,
+				acc.BurstIngressBps,
+				acc.BurstDurationSeconds,
+				acc.BurstCooldownSeconds,
+			); err != nil {
 				a.fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -716,6 +746,8 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 				"expiryTime": expiryTime, "reset": reset,
 				"subId":     account.SubID,
 				"egressBps": account.EgressBps, "ingressBps": account.IngressBps,
+				"burstEgressBps": account.BurstEgressBps, "burstIngressBps": account.BurstIngressBps,
+				"burstDurationSeconds": account.BurstDurationSeconds, "burstCooldownSeconds": account.BurstCooldownSeconds,
 				"created_at": account.CreatedAt, "updated_at": account.UpdatedAt,
 			}
 			found = true
@@ -733,12 +765,20 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			return
 		}
 		if oldEmail != account.Email {
-			if err := a.syncAccountRateLimit(oldEmail, 0, 0); err != nil {
+			if err := a.syncAccountRateLimit(oldEmail, 0, 0, 0, 0, 0, 0); err != nil {
 				a.fail(c, http.StatusInternalServerError, err.Error())
 				return
 			}
 		}
-		if err := a.syncAccountRateLimit(account.Email, account.EgressBps, account.IngressBps); err != nil {
+		if err := a.syncAccountRateLimit(
+			account.Email,
+			account.EgressBps,
+			account.IngressBps,
+			account.BurstEgressBps,
+			account.BurstIngressBps,
+			account.BurstDurationSeconds,
+			account.BurstCooldownSeconds,
+		); err != nil {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1073,23 +1113,31 @@ func (a *RestAPIController) getRateLimit(c *gin.Context) {
 		return
 	}
 	a.ok(c, gin.H{
-		"id":          rl.Id,
-		"email":       rl.Email,
-		"egressBps":   rl.EgressBps,
-		"ingressBps":  rl.IngressBps,
-		"egressRate":  rateLimitView(rl.EgressBps),
-		"ingressRate": rateLimitView(rl.IngressBps),
-		"updatedAt":   rl.UpdatedAt,
+		"id":                   rl.Id,
+		"email":                rl.Email,
+		"egressBps":            rl.EgressBps,
+		"ingressBps":           rl.IngressBps,
+		"burstEgressBps":       rl.BurstEgressBps,
+		"burstIngressBps":      rl.BurstIngressBps,
+		"burstDurationSeconds": rl.BurstDurationSeconds,
+		"burstCooldownSeconds": rl.BurstCooldownSeconds,
+		"egressRate":           rateLimitView(rl.EgressBps),
+		"ingressRate":          rateLimitView(rl.IngressBps),
+		"updatedAt":            rl.UpdatedAt,
 	})
 }
 
 func (a *RestAPIController) setRateLimit(c *gin.Context) {
 	email := c.Param("email")
 	var body struct {
-		EgressBps   int64           `json:"egressBps"`
-		IngressBps  int64           `json:"ingressBps"`
-		EgressRate  *rateLimitInput `json:"egressRate,omitempty"`
-		IngressRate *rateLimitInput `json:"ingressRate,omitempty"`
+		EgressBps            int64           `json:"egressBps"`
+		IngressBps           int64           `json:"ingressBps"`
+		BurstEgressBps       int64           `json:"burstEgressBps"`
+		BurstIngressBps      int64           `json:"burstIngressBps"`
+		BurstDurationSeconds int64           `json:"burstDurationSeconds"`
+		BurstCooldownSeconds int64           `json:"burstCooldownSeconds"`
+		EgressRate           *rateLimitInput `json:"egressRate,omitempty"`
+		IngressRate          *rateLimitInput `json:"ingressRate,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		a.fail(c, http.StatusBadRequest, err.Error())
@@ -1101,21 +1149,41 @@ func (a *RestAPIController) setRateLimit(c *gin.Context) {
 	}
 	egressBps := normalizeRateLimitBps(body.EgressBps, body.EgressRate)
 	ingressBps := normalizeRateLimitBps(body.IngressBps, body.IngressRate)
-	rl, err := a.rateLimitService.Set(email, egressBps, ingressBps)
+	rl, err := a.rateLimitService.SetWithBurst(
+		email,
+		egressBps,
+		ingressBps,
+		body.BurstEgressBps,
+		body.BurstIngressBps,
+		body.BurstDurationSeconds,
+		body.BurstCooldownSeconds,
+	)
 	if err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Push to the running Xray subprocess over gRPC immediately.
-	a.xrayDynamic.DynamicSetRateLimit(email, egressBps, ingressBps)
+	a.xrayDynamic.DynamicSetRateLimitWithBurst(
+		email,
+		egressBps,
+		ingressBps,
+		body.BurstEgressBps,
+		body.BurstIngressBps,
+		body.BurstDurationSeconds,
+		body.BurstCooldownSeconds,
+	)
 	a.ok(c, gin.H{
-		"id":          rl.Id,
-		"email":       rl.Email,
-		"egressBps":   rl.EgressBps,
-		"ingressBps":  rl.IngressBps,
-		"egressRate":  rateLimitView(rl.EgressBps),
-		"ingressRate": rateLimitView(rl.IngressBps),
-		"updatedAt":   rl.UpdatedAt,
+		"id":                   rl.Id,
+		"email":                rl.Email,
+		"egressBps":            rl.EgressBps,
+		"ingressBps":           rl.IngressBps,
+		"burstEgressBps":       rl.BurstEgressBps,
+		"burstIngressBps":      rl.BurstIngressBps,
+		"burstDurationSeconds": rl.BurstDurationSeconds,
+		"burstCooldownSeconds": rl.BurstCooldownSeconds,
+		"egressRate":           rateLimitView(rl.EgressBps),
+		"ingressRate":          rateLimitView(rl.IngressBps),
+		"updatedAt":            rl.UpdatedAt,
 	})
 }
 
@@ -1221,6 +1289,7 @@ func (a *RestAPIController) getNodeStatus(c *gin.Context) {
 			"outbound_crud",
 			"routing_crud",
 			"rate_limit",
+			"rate_limit_burst",
 			"public_ips",
 		},
 	})
@@ -1349,7 +1418,15 @@ func (a *RestAPIController) fullSync(c *gin.Context) {
 		desiredRLMap := make(map[string]bool)
 		for _, rl := range req.RateLimits {
 			desiredRLMap[rl.Email] = true
-			if _, err := a.rateLimitService.Set(rl.Email, rl.EgressBps, rl.IngressBps); err != nil {
+			if _, err := a.rateLimitService.SetWithBurst(
+				rl.Email,
+				rl.EgressBps,
+				rl.IngressBps,
+				rl.BurstEgressBps,
+				rl.BurstIngressBps,
+				rl.BurstDurationSeconds,
+				rl.BurstCooldownSeconds,
+			); err != nil {
 				errs = append(errs, "rate-limit set "+rl.Email+": "+err.Error())
 			}
 		}

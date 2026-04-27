@@ -279,7 +279,16 @@ func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, err
 	return clients, nil
 }
 
-func (s *InboundService) syncClientRateLimit(tx *gorm.DB, email string, egressBps, ingressBps int64) error {
+func (s *InboundService) syncClientRateLimit(
+	tx *gorm.DB,
+	email string,
+	egressBps int64,
+	ingressBps int64,
+	burstEgressBps int64,
+	burstIngressBps int64,
+	burstDurationSeconds int64,
+	burstCooldownSeconds int64,
+) error {
 	if email == "" {
 		return nil
 	}
@@ -293,10 +302,14 @@ func (s *InboundService) syncClientRateLimit(tx *gorm.DB, email string, egressBp
 	if err != nil {
 		if database.IsNotFound(err) {
 			return tx.Create(&model.ClientRateLimit{
-				Email:      email,
-				EgressBps:  egressBps,
-				IngressBps: ingressBps,
-				UpdatedAt:  now,
+				Email:                email,
+				EgressBps:            egressBps,
+				IngressBps:           ingressBps,
+				BurstEgressBps:       burstEgressBps,
+				BurstIngressBps:      burstIngressBps,
+				BurstDurationSeconds: burstDurationSeconds,
+				BurstCooldownSeconds: burstCooldownSeconds,
+				UpdatedAt:            now,
 			}).Error
 		}
 		return err
@@ -304,6 +317,10 @@ func (s *InboundService) syncClientRateLimit(tx *gorm.DB, email string, egressBp
 
 	rl.EgressBps = egressBps
 	rl.IngressBps = ingressBps
+	rl.BurstEgressBps = burstEgressBps
+	rl.BurstIngressBps = burstIngressBps
+	rl.BurstDurationSeconds = burstDurationSeconds
+	rl.BurstCooldownSeconds = burstCooldownSeconds
 	rl.UpdatedAt = now
 	return tx.Save(&rl).Error
 }
@@ -320,7 +337,16 @@ func (s *InboundService) syncClientRateLimits(tx *gorm.DB, clients []model.Clien
 			continue
 		}
 		seen[key] = struct{}{}
-		if err := s.syncClientRateLimit(tx, email, client.EgressBps, client.IngressBps); err != nil {
+		if err := s.syncClientRateLimit(
+			tx,
+			email,
+			client.EgressBps,
+			client.IngressBps,
+			client.BurstEgressBps,
+			client.BurstIngressBps,
+			client.BurstDurationSeconds,
+			client.BurstCooldownSeconds,
+		); err != nil {
 			return err
 		}
 	}

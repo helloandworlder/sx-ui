@@ -242,6 +242,43 @@ func TestAPI_RateLimit_SetGetRemove(t *testing.T) {
 	}
 }
 
+func TestAPI_RateLimit_SetGetBurstWindow(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	email := "D20668679"
+
+	w := doRequest(router, "PUT", "/api/v1/rate-limits/"+email, map[string]any{
+		"egressBps":            1_000_000,
+		"ingressBps":           1_000_000,
+		"burstEgressBps":       2_000_000,
+		"burstIngressBps":      2_000_000,
+		"burstDurationSeconds": 30,
+		"burstCooldownSeconds": 300,
+	})
+	if w.Code != 200 {
+		t.Fatalf("set: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(router, "GET", "/api/v1/rate-limits/"+email, nil)
+	if w.Code != 200 {
+		t.Fatalf("get: expected 200, got %d", w.Code)
+	}
+	resp := parseResp(t, w)
+	var rl model.ClientRateLimit
+	json.Unmarshal(resp.Obj, &rl)
+
+	if rl.Email != email {
+		t.Fatalf("expected email %s, got %s", email, rl.Email)
+	}
+	if rl.BurstEgressBps != 2_000_000 || rl.BurstIngressBps != 2_000_000 {
+		t.Fatalf("expected burst bps 2000000/2000000, got %d/%d", rl.BurstEgressBps, rl.BurstIngressBps)
+	}
+	if rl.BurstDurationSeconds != 30 || rl.BurstCooldownSeconds != 300 {
+		t.Fatalf("expected burst window 30/300, got %d/%d", rl.BurstDurationSeconds, rl.BurstCooldownSeconds)
+	}
+}
+
 func TestAPI_MixedAccountUpdatePreservesAndClearsEntitlements(t *testing.T) {
 	router, dbPath := setupTestRouter(t)
 	defer teardownRouter(dbPath)

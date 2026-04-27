@@ -48,9 +48,13 @@ type configHashRoute struct {
 }
 
 type configHashRateLimit struct {
-	Email      string `json:"email"`
-	EgressBps  int64  `json:"egressBps"`
-	IngressBps int64  `json:"ingressBps"`
+	Email                string `json:"email"`
+	EgressBps            int64  `json:"egressBps"`
+	IngressBps           int64  `json:"ingressBps"`
+	BurstEgressBps       int64  `json:"burstEgressBps"`
+	BurstIngressBps      int64  `json:"burstIngressBps"`
+	BurstDurationSeconds int64  `json:"burstDurationSeconds"`
+	BurstCooldownSeconds int64  `json:"burstCooldownSeconds"`
 }
 
 // GetSeqInfo returns {seq, hash} for the lightweight polling endpoint.
@@ -151,9 +155,13 @@ func (s *ConfigSeqService) UpdateHash() error {
 	hashRateLimits := make([]configHashRateLimit, 0, len(rateLimits))
 	for _, rateLimit := range rateLimits {
 		hashRateLimits = append(hashRateLimits, configHashRateLimit{
-			Email:      rateLimit.Email,
-			EgressBps:  rateLimit.EgressBps,
-			IngressBps: rateLimit.IngressBps,
+			Email:                rateLimit.Email,
+			EgressBps:            rateLimit.EgressBps,
+			IngressBps:           rateLimit.IngressBps,
+			BurstEgressBps:       rateLimit.BurstEgressBps,
+			BurstIngressBps:      rateLimit.BurstIngressBps,
+			BurstDurationSeconds: rateLimit.BurstDurationSeconds,
+			BurstCooldownSeconds: rateLimit.BurstCooldownSeconds,
 		})
 	}
 
