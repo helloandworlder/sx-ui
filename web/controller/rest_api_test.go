@@ -401,6 +401,171 @@ func TestAPI_MixedAccountUpdateAcceptsFormPayload(t *testing.T) {
 	}
 }
 
+func TestAPI_MixedAccountUpdateMatchesOriginalIdentifierWhenEmailChanges(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20087,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","accounts":[{"user":"old-user","pass":"old-pass","email":"vmvnleo0111","enable":true,"comment":"","limitIp":0,"totalGB":0,"expiryTime":0,"reset":0,"egressBps":0,"ingressBps":0,"subId":"old-sub"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed-email-change",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{}
+	form.Set("user", "TQdfuMaWPS111")
+	form.Set("pass", "enD1RABi4c")
+	form.Set("email", "npo5a")
+	form.Set("enable", "true")
+	form.Set("comment", "")
+	form.Set("egressBps", "0")
+	form.Set("ingressBps", "0")
+	form.Set("subId", "fccap8wq7g701zj0")
+	form.Set("created_at", "1777590634275")
+	form.Set("updated_at", "1777590640388")
+
+	w := doFormRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/vmvnleo0111", form)
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Accounts) != 1 {
+		t.Fatalf("expected one account, got %d", len(settings.Accounts))
+	}
+	account := settings.Accounts[0]
+	if account["email"] != "npo5a" || account["user"] != "TQdfuMaWPS111" || account["pass"] != "enD1RABi4c" {
+		t.Fatalf("expected account to update by original identifier, got %#v", account)
+	}
+}
+
+func TestAPI_MixedAccountUpdateAcceptsLegacyClientsSettings(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed legacy clients",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20088,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","clients":[{"user":"legacy-user","pass":"legacy-pass","email":"legacy-email","enable":true,"comment":"","egressBps":0,"ingressBps":0,"subId":"old-sub"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed-legacy-clients",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{}
+	form.Set("user", "new-user")
+	form.Set("pass", "new-pass")
+	form.Set("email", "legacy-email")
+	form.Set("enable", "true")
+	form.Set("comment", "")
+	form.Set("egressBps", "0")
+	form.Set("ingressBps", "0")
+	form.Set("subId", "new-sub")
+
+	w := doFormRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/legacy-email", form)
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Clients []map[string]any `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Clients) != 1 {
+		t.Fatalf("expected one legacy client, got %d", len(settings.Clients))
+	}
+	client := settings.Clients[0]
+	if client["user"] != "new-user" || client["pass"] != "new-pass" || client["subId"] != "new-sub" {
+		t.Fatalf("expected legacy clients settings to update in place, got %#v", client)
+	}
+}
+
+func TestAPI_MixedAccountListAndDeleteAcceptLegacyClientsSettings(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed legacy clients",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20089,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","clients":[{"id":"account-uuid","user":"legacy-user","pass":"legacy-pass","email":"legacy-email","enable":true,"comment":"","egressBps":0,"ingressBps":0,"subId":"old-sub"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed-legacy-list-delete",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := doRequest(router, "GET", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients", nil)
+	if w.Code != 200 {
+		t.Fatalf("list: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := parseResp(t, w)
+	var listed struct {
+		Clients []map[string]any `json:"clients"`
+	}
+	if err := json.Unmarshal(resp.Obj, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Clients) != 1 || listed.Clients[0]["email"] != "legacy-email" {
+		t.Fatalf("expected legacy clients to list as clients, got %#v", listed.Clients)
+	}
+
+	w = doRequest(router, "DELETE", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/account-uuid", nil)
+	if w.Code != 200 {
+		t.Fatalf("delete: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Clients []map[string]any `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Clients) != 0 {
+		t.Fatalf("expected legacy clients settings to delete in place, got %#v", settings.Clients)
+	}
+}
+
 func TestAPI_UpdateClientAcceptsStringTelegramID(t *testing.T) {
 	router, dbPath := setupTestRouter(t)
 	defer teardownRouter(dbPath)

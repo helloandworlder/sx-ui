@@ -269,7 +269,11 @@ func (a *RestAPIController) listClients(c *gin.Context) {
 		return
 	}
 	if isAccountInboundProtocol(inbound.Protocol) {
-		a.ok(c, gin.H{"clients": settings["accounts"]})
+		accounts := settings["accounts"]
+		if len(accounts) == 0 {
+			accounts = settings["clients"]
+		}
+		a.ok(c, gin.H{"clients": accounts})
 		return
 	}
 	a.ok(c, gin.H{"clients": settings["clients"]})
@@ -291,6 +295,7 @@ type rateLimitInput struct {
 }
 
 type inboundAccountPayload struct {
+	ID                   string          `json:"id" form:"id"`
 	User                 string          `json:"user" form:"user"`
 	Pass                 string          `json:"pass" form:"pass"`
 	Email                string          `json:"email" form:"email"`
@@ -464,6 +469,48 @@ func isAccountInboundProtocol(protocol model.Protocol) bool {
 	}
 }
 
+func accountSettingsKey(settings map[string]any) string {
+	if _, ok := settings["clients"]; ok {
+		if _, hasAccounts := settings["accounts"]; !hasAccounts {
+			return "clients"
+		}
+	}
+	return "accounts"
+}
+
+func accountSettingsRaw(settings map[string]any) ([]any, string) {
+	key := accountSettingsKey(settings)
+	items, _ := settings[key].([]any)
+	return items, key
+}
+
+func rawString(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func rawBool(value any, fallback bool) bool {
+	if v, ok := value.(bool); ok {
+		return v
+	}
+	return fallback
+}
+
+func accountMatchesIdentifier(item map[string]any, identifier string) bool {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return false
+	}
+	for _, key := range []string{"email", "user", "id"} {
+		if rawString(item[key]) == identifier {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeShadowsocksClients(
 	inbound *model.Inbound,
 	clients []model.Client,
@@ -567,14 +614,14 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 		// Merge new accounts into existing inbound settings
 		var existSettings map[string]any
 		json.Unmarshal([]byte(inbound.Settings), &existSettings)
-		existAccounts, _ := existSettings["accounts"].([]any)
+		existAccounts, accountKey := accountSettingsRaw(existSettings)
 		for _, acc := range req.Accounts {
 			egressBps := normalizeRateLimitBps(acc.EgressBps, acc.EgressRate)
 			ingressBps := normalizeRateLimitBps(acc.IngressBps, acc.IngressRate)
 			nowTs := time.Now().UnixMilli()
 			enable := boolOrDefault(acc.Enable, true)
 			existAccounts = append(existAccounts, map[string]any{
-				"user": acc.User, "pass": acc.Pass, "email": acc.Email,
+				"id": acc.ID, "user": acc.User, "pass": acc.Pass, "email": acc.Email,
 				"enable": enable, "comment": acc.Comment,
 				"limitIp": intValueOrDefault(acc.LimitIP, 0), "totalGB": int64ValueOrDefault(acc.TotalGB, 0),
 				"expiryTime": int64ValueOrDefault(acc.ExpiryTime, 0), "reset": intValueOrDefault(acc.Reset, 0),
@@ -597,7 +644,7 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 				return
 			}
 		}
-		existSettings["accounts"] = existAccounts
+		existSettings[accountKey] = existAccounts
 		newSettings, _ := json.Marshal(existSettings)
 		inbound.Settings = string(newSettings)
 		_, _, err := a.inboundService.UpdateInbound(inbound)
@@ -693,32 +740,35 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		accounts, _ := settings["accounts"].([]any)
+		accounts, accountKey := accountSettingsRaw(settings)
 		oldEmail := email
+		oldID := ""
 		oldEnabled := true
 		found := false
 		for idx, raw := range accounts {
 			item, _ := raw.(map[string]any)
-			accEmail, _ := item["email"].(string)
-			accUser, _ := item["user"].(string)
-			accPass, _ := item["pass"].(string)
-			if accEmail != email && accUser != email {
+			if !accountMatchesIdentifier(item, email) {
 				continue
 			}
-			oldEmail = accEmail
-			if v, ok := item["created_at"].(float64); ok {
-				account.CreatedAt = int64(v)
+			accID := rawString(item["id"])
+			accEmail := rawString(item["email"])
+			accUser := rawString(item["user"])
+			accPass := rawString(item["pass"])
+			oldID = accID
+			if accEmail != "" {
+				oldEmail = accEmail
 			}
+			account.CreatedAt = numericInt64(item["created_at"])
 			if account.CreatedAt == 0 {
 				account.CreatedAt = time.Now().UnixMilli()
 			}
 			account.UpdatedAt = time.Now().UnixMilli()
-			enable := true
-			if rawEnable, ok := item["enable"].(bool); ok {
-				enable = rawEnable
-			}
+			enable := rawBool(item["enable"], true)
 			oldEnabled = enable
 			enable = boolOrDefault(account.Enable, enable)
+			if account.ID == "" {
+				account.ID = accID
+			}
 			if account.User == "" {
 				account.User = accUser
 			}
@@ -740,7 +790,7 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			account.EgressBps = normalizeRateLimitBps(account.EgressBps, account.EgressRate)
 			account.IngressBps = normalizeRateLimitBps(account.IngressBps, account.IngressRate)
 			accounts[idx] = map[string]any{
-				"user": account.User, "pass": account.Pass, "email": account.Email,
+				"id": account.ID, "user": account.User, "pass": account.Pass, "email": account.Email,
 				"enable": enable, "comment": account.Comment,
 				"limitIp": limitIP, "totalGB": totalGB,
 				"expiryTime": expiryTime, "reset": reset,
@@ -757,14 +807,14 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			a.fail(c, http.StatusNotFound, "client not found")
 			return
 		}
-		settings["accounts"] = accounts
+		settings[accountKey] = accounts
 		newSettings, _ := json.Marshal(settings)
 		inbound.Settings = string(newSettings)
 		if _, _, err := a.inboundService.UpdateInbound(inbound); err != nil {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if oldEmail != account.Email {
+		if oldEmail != "" && oldEmail != account.Email {
 			if err := a.syncAccountRateLimit(oldEmail, 0, 0, 0, 0, 0, 0); err != nil {
 				a.fail(c, http.StatusInternalServerError, err.Error())
 				return
@@ -782,8 +832,12 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if oldEnabled {
-			a.xrayDynamic.DynamicRemoveUser(inbound.Tag, oldEmail)
+		removeEmail := oldEmail
+		if removeEmail == "" {
+			removeEmail = oldID
+		}
+		if oldEnabled && removeEmail != "" {
+			a.xrayDynamic.DynamicRemoveUser(inbound.Tag, removeEmail)
 		}
 		if boolOrDefault(account.Enable, true) {
 			a.xrayDynamic.DynamicAddUser(
@@ -859,24 +913,22 @@ func (a *RestAPIController) deleteClient(c *gin.Context) {
 		// Remove account by email (or username) from accounts array
 		var settings map[string]any
 		json.Unmarshal([]byte(inbound.Settings), &settings)
-		accounts, _ := settings["accounts"].([]any)
+		accounts, accountKey := accountSettingsRaw(settings)
 		var filtered []any
 		wasEnabled := false
+		removedEmail := email
 		for _, acc := range accounts {
 			m, _ := acc.(map[string]any)
-			accEmail, _ := m["email"].(string)
-			accUser, _ := m["user"].(string)
-			if accEmail != email && accUser != email {
+			if !accountMatchesIdentifier(m, email) {
 				filtered = append(filtered, acc)
 				continue
 			}
-			if rawEnable, ok := m["enable"].(bool); ok {
-				wasEnabled = rawEnable
-			} else {
-				wasEnabled = true
+			if accEmail := rawString(m["email"]); accEmail != "" {
+				removedEmail = accEmail
 			}
+			wasEnabled = rawBool(m["enable"], true)
 		}
-		settings["accounts"] = filtered
+		settings[accountKey] = filtered
 		newSettings, _ := json.Marshal(settings)
 		inbound.Settings = string(newSettings)
 		_, _, err := a.inboundService.UpdateInbound(inbound)
@@ -884,9 +936,9 @@ func (a *RestAPIController) deleteClient(c *gin.Context) {
 			a.fail(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		_ = a.rateLimitService.Remove(email)
+		_ = a.rateLimitService.Remove(removedEmail)
 		if wasEnabled {
-			a.xrayDynamic.DynamicRemoveUser(inbound.Tag, email)
+			a.xrayDynamic.DynamicRemoveUser(inbound.Tag, removedEmail)
 		}
 
 	default:

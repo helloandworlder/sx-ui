@@ -1186,8 +1186,9 @@
         const dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);
         if (dbInbound && [Protocols.HTTP, Protocols.SOCKS, Protocols.MIXED].includes(dbInbound.protocol)) {
           clientModal.loading(true);
+          const accountId = clientId || client.email || client.user;
           const msg = await HttpUtil.put(
-            `/api/v1/inbounds/${dbInboundId}/clients/${encodeURIComponent(client.email)}`,
+            `/api/v1/inbounds/${dbInboundId}/clients/${encodeURIComponent(accountId)}`,
             client.toJson ? client.toJson() : client,
           );
           clientModal.loading(false);

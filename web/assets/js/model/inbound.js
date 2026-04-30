@@ -2779,7 +2779,7 @@ Inbound.MixedSettings = class extends Inbound.Settings {
     static fromJson(json = {}, protocol = Protocols.MIXED) {
         let accounts;
         if (json.auth === 'password') {
-            accounts = (json.accounts || []).map(
+            accounts = (json.accounts || json.clients || []).map(
                 account => Inbound.MixedSettings.SocksAccount.fromJson(account)
             )
         }
@@ -2867,9 +2867,10 @@ Inbound.HttpSettings = class extends Inbound.Settings {
     }
 
     static fromJson(json = {}) {
+        const accounts = json.accounts || json.clients || [];
         return new Inbound.HttpSettings(
             Protocols.HTTP,
-            json.accounts.map(account => Inbound.HttpSettings.HttpAccount.fromJson(account)),
+            accounts.map(account => Inbound.HttpSettings.HttpAccount.fromJson(account)),
             json.allowTransparent,
         );
     }
