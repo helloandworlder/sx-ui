@@ -1165,18 +1165,24 @@ update_x-ui() {
     chmod +x x-ui bin/xray-linux-$(arch) >/dev/null 2>&1
     
     echo -e "${green}Downloading and installing sx-ui.sh script...${plain}"
-    ${curl_bin} -fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
+    local cli_target="/usr/bin/sx-ui"
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        cli_target="/usr/bin/x-ui"
+    fi
+    ${curl_bin} -fLRo "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch sx-ui with IPv4...${plain}"
-        ${curl_bin} -4fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
+        ${curl_bin} -4fLRo "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download sx-ui.sh script, please be sure that your server can access GitHub"
         fi
     fi
     
     chmod +x ${xui_folder}/x-ui.sh >/dev/null 2>&1
-    chmod +x /usr/bin/sx-ui >/dev/null 2>&1
-    if [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+    chmod +x "${cli_target}" >/dev/null 2>&1
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+    elif [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
         ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
     fi
     mkdir -p "${xui_log_folder}" >/dev/null 2>&1

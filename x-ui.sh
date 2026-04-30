@@ -348,9 +348,16 @@ update_menu() {
         return 0
     fi
 
-    curl -fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh
+    local cli_target="/usr/bin/sx-ui"
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        cli_target="/usr/bin/x-ui"
+    fi
+    curl -fLRo "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh
     chmod +x ${xui_folder}/x-ui.sh
-    chmod +x /usr/bin/sx-ui
+    chmod +x "${cli_target}"
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+    fi
 
     if [[ $? == 0 ]]; then
         echo -e "${green}Update successful. The panel has automatically restarted.${plain}"
@@ -809,13 +816,20 @@ enable_bbr() {
 }
 
 update_shell() {
-    curl -fLRo /usr/bin/sx-ui -z /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh
+    local cli_target="/usr/bin/sx-ui"
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        cli_target="/usr/bin/x-ui"
+    fi
+    curl -fLRo "${cli_target}" -z "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh
     if [[ $? != 0 ]]; then
         echo ""
         LOGE "Failed to download script, Please check whether the machine can connect Github"
         before_show_menu
     else
-        chmod +x /usr/bin/sx-ui
+        chmod +x "${cli_target}"
+        if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+            ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+        fi
         LOGI "Upgrade script succeeded, Please rerun the script"
         before_show_menu
     fi

@@ -291,26 +291,26 @@ type rateLimitInput struct {
 }
 
 type inboundAccountPayload struct {
-	User                 string          `json:"user"`
-	Pass                 string          `json:"pass"`
-	Email                string          `json:"email"`
-	Enable               *bool           `json:"enable"`
-	Comment              string          `json:"comment"`
-	LimitIP              *int            `json:"limitIp"`
-	TotalGB              *int64          `json:"totalGB"`
-	ExpiryTime           *int64          `json:"expiryTime"`
-	Reset                *int            `json:"reset"`
-	EgressBps            int64           `json:"egressBps"`
-	IngressBps           int64           `json:"ingressBps"`
-	BurstEgressBps       int64           `json:"burstEgressBps"`
-	BurstIngressBps      int64           `json:"burstIngressBps"`
-	BurstDurationSeconds int64           `json:"burstDurationSeconds"`
-	BurstCooldownSeconds int64           `json:"burstCooldownSeconds"`
-	SubID                string          `json:"subId"`
+	User                 string          `json:"user" form:"user"`
+	Pass                 string          `json:"pass" form:"pass"`
+	Email                string          `json:"email" form:"email"`
+	Enable               *bool           `json:"enable" form:"enable"`
+	Comment              string          `json:"comment" form:"comment"`
+	LimitIP              *int            `json:"limitIp" form:"limitIp"`
+	TotalGB              *int64          `json:"totalGB" form:"totalGB"`
+	ExpiryTime           *int64          `json:"expiryTime" form:"expiryTime"`
+	Reset                *int            `json:"reset" form:"reset"`
+	EgressBps            int64           `json:"egressBps" form:"egressBps"`
+	IngressBps           int64           `json:"ingressBps" form:"ingressBps"`
+	BurstEgressBps       int64           `json:"burstEgressBps" form:"burstEgressBps"`
+	BurstIngressBps      int64           `json:"burstIngressBps" form:"burstIngressBps"`
+	BurstDurationSeconds int64           `json:"burstDurationSeconds" form:"burstDurationSeconds"`
+	BurstCooldownSeconds int64           `json:"burstCooldownSeconds" form:"burstCooldownSeconds"`
+	SubID                string          `json:"subId" form:"subId"`
 	EgressRate           *rateLimitInput `json:"egressRate,omitempty"`
 	IngressRate          *rateLimitInput `json:"ingressRate,omitempty"`
-	CreatedAt            int64           `json:"created_at,omitempty"`
-	UpdatedAt            int64           `json:"updated_at,omitempty"`
+	CreatedAt            int64           `json:"created_at,omitempty" form:"created_at"`
+	UpdatedAt            int64           `json:"updated_at,omitempty" form:"updated_at"`
 }
 
 func rateLimitFactor(unit string) float64 {
@@ -526,7 +526,7 @@ func (a *RestAPIController) addClient(c *gin.Context) {
 	}
 
 	var req AddClientRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		a.fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -677,7 +677,7 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 
 	if isAccountInboundProtocol(inbound.Protocol) {
 		var account inboundAccountPayload
-		if err := c.ShouldBindJSON(&account); err != nil {
+		if err := c.ShouldBind(&account); err != nil {
 			a.fail(c, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -799,7 +799,7 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 	}
 
 	var client model.Client
-	if err := c.ShouldBindJSON(&client); err != nil {
+	if err := c.ShouldBind(&client); err != nil {
 		a.fail(c, http.StatusBadRequest, err.Error())
 		return
 	}

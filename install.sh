@@ -1305,12 +1305,20 @@ install_x-ui() {
     fi
     chmod +x x-ui bin/xray-linux-$(arch)
     
-    # Update x-ui cli and se set permission
-    mv -f /usr/bin/sx-ui-temp /usr/bin/sx-ui
-    chmod +x /usr/bin/sx-ui
-    if [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
-        ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
-        echo -e "${green}Legacy x-ui command now points to sx-ui.${plain}"
+    # Keep the installed service and the primary CLI under the same x-ui name
+    # when sx-ui is taking over an existing 3x-ui runtime.
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        mv -f /usr/bin/sx-ui-temp /usr/bin/x-ui
+        chmod +x /usr/bin/x-ui
+        ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+        echo -e "${green}Legacy x-ui command now manages the sx-ui takeover runtime.${plain}"
+    else
+        mv -f /usr/bin/sx-ui-temp /usr/bin/sx-ui
+        chmod +x /usr/bin/sx-ui
+        if [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+            ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
+            echo -e "${green}Legacy x-ui command now points to sx-ui.${plain}"
+        fi
     fi
     mkdir -p "${xui_db_folder}" "${xui_log_folder}"
     write_instance_env

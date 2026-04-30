@@ -6,8 +6,10 @@ import (
 	"io"
 	_ "net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +62,15 @@ func doRequest(router *gin.Engine, method, path string, body any) *httptest.Resp
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("X-API-Key", "test-api-key")
 	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
+func doFormRequest(router *gin.Engine, method, path string, form url.Values) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	req.Header.Set("X-API-Key", "test-api-key")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
@@ -330,6 +341,63 @@ func TestAPI_MixedAccountUpdatePreservesAndClearsEntitlements(t *testing.T) {
 	if account["totalGB"].(float64) != 0 || account["expiryTime"].(float64) != 0 ||
 		account["reset"].(float64) != 0 || account["limitIp"].(float64) != 0 {
 		t.Fatalf("expected explicit zero entitlement fields, got %#v", account)
+	}
+}
+
+func TestAPI_MixedAccountUpdateAcceptsFormPayload(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20086,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","accounts":[{"user":"old-user","pass":"old-pass","email":"vo4qcnxo","enable":true,"comment":"","limitIp":0,"totalGB":0,"expiryTime":0,"reset":0,"egressBps":0,"ingressBps":0,"subId":"old-sub"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed-form",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{}
+	form.Set("user", "sLeHVAG47c")
+	form.Set("pass", "XxUgDcEwVg")
+	form.Set("email", "vo4qcnxo")
+	form.Set("enable", "true")
+	form.Set("comment", "")
+	form.Set("egressBps", "0")
+	form.Set("ingressBps", "0")
+	form.Set("subId", "j312rxe3bpjkz02k")
+
+	w := doFormRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/vo4qcnxo", form)
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Accounts) != 1 {
+		t.Fatalf("expected one account, got %d", len(settings.Accounts))
+	}
+	account := settings.Accounts[0]
+	if account["user"] != "sLeHVAG47c" || account["pass"] != "XxUgDcEwVg" {
+		t.Fatalf("expected form credentials to update, got %#v", account)
+	}
+	if account["subId"] != "j312rxe3bpjkz02k" {
+		t.Fatalf("expected form subId to update, got %#v", account)
 	}
 }
 
