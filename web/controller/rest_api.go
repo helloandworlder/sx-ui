@@ -818,10 +818,14 @@ func (a *RestAPIController) updateClient(c *gin.Context) {
 	// UpdateInboundClient expects clientId (the UUID), but in our REST API
 	// we use email as the identifier. Pass email as clientId — the service
 	// will look up the client by scanning the settings JSON.
+	clientID := client.ID
+	if strings.TrimSpace(clientID) == "" {
+		clientID = email
+	}
 	needRestart, err := a.inboundService.UpdateInboundClient(&model.Inbound{
 		Id:       id,
 		Settings: settings,
-	}, client.ID)
+	}, clientID)
 	if err != nil {
 		a.fail(c, http.StatusInternalServerError, err.Error())
 		return

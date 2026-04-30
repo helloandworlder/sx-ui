@@ -2,7 +2,10 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/helloandworlder/sx-ui/v2/util/json_util"
 	"github.com/helloandworlder/sx-ui/v2/xray"
@@ -219,4 +222,41 @@ type Client struct {
 	Reset                int    `json:"reset" form:"reset"`             // Reset period in days
 	CreatedAt            int64  `json:"created_at,omitempty"`           // Creation timestamp
 	UpdatedAt            int64  `json:"updated_at,omitempty"`           // Last update timestamp
+}
+
+// UnmarshalJSON accepts legacy panel payloads where tgId may be encoded as
+// a quoted number or left blank by frontend form controls.
+func (c *Client) UnmarshalJSON(data []byte) error {
+	type clientAlias Client
+	var raw struct {
+		*clientAlias
+		TgID json.RawMessage `json:"tgId"`
+	}
+	raw.clientAlias = (*clientAlias)(c)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.TgID) == 0 || string(raw.TgID) == "null" {
+		return nil
+	}
+	var numeric int64
+	if err := json.Unmarshal(raw.TgID, &numeric); err == nil {
+		c.TgID = numeric
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw.TgID, &text); err != nil {
+		return fmt.Errorf("client tgId must be a number or numeric string: %w", err)
+	}
+	text = strings.ReplaceAll(strings.TrimSpace(text), " ", "")
+	if text == "" {
+		c.TgID = 0
+		return nil
+	}
+	parsed, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("client tgId must be a number or numeric string: %w", err)
+	}
+	c.TgID = parsed
+	return nil
 }

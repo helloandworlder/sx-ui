@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 
-	"github.com/helloandworlder/sx-ui/v2/xray"
 	"github.com/helloandworlder/sx-ui/v2/util/common"
 	"github.com/helloandworlder/sx-ui/v2/web/service"
+	"github.com/helloandworlder/sx-ui/v2/xray"
 
 	"github.com/gin-gonic/gin"
 )
@@ -76,6 +78,7 @@ func (a *XraySettingController) getXraySetting(c *gin.Context) {
 // updateSetting updates the Xray configuration settings.
 func (a *XraySettingController) updateSetting(c *gin.Context) {
 	xraySetting := c.PostForm("xraySetting")
+	oldXraySetting, _ := a.SettingService.GetXrayConfigTemplate()
 	if err := a.XraySettingService.SaveXraySetting(xraySetting); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
 		return
@@ -85,11 +88,105 @@ func (a *XraySettingController) updateSetting(c *gin.Context) {
 		outboundTestUrl = "https://www.google.com/generate_204"
 	}
 	_ = a.SettingService.SetXrayOutboundTestUrl(outboundTestUrl)
-	if err := a.XrayService.RestartXray(false); err != nil {
+	savedXraySetting := service.UnwrapXrayTemplateConfig(xraySetting)
+	plan, err := buildRuntimeApplyPlan(oldXraySetting, savedXraySetting)
+	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
 		return
 	}
+	if plan.runtimeOnly {
+		a.applyRuntimePlan(plan)
+	} else {
+		if err := a.XrayService.RestartXray(false); err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+			return
+		}
+	}
 	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), nil)
+}
+
+type runtimeApplyPlan struct {
+	runtimeOnly      bool
+	changedOutbounds bool
+	changedRouting   bool
+	changedReverse   bool
+	config           xray.Config
+}
+
+func buildRuntimeApplyPlan(oldRaw, newRaw string) (runtimeApplyPlan, error) {
+	var plan runtimeApplyPlan
+	var oldCfg xray.Config
+	var newCfg xray.Config
+	if err := json.Unmarshal([]byte(service.UnwrapXrayTemplateConfig(oldRaw)), &oldCfg); err != nil {
+		return plan, nil
+	}
+	if err := json.Unmarshal([]byte(service.UnwrapXrayTemplateConfig(newRaw)), &newCfg); err != nil {
+		return plan, err
+	}
+
+	plan.config = newCfg
+	plan.changedOutbounds = !jsonEqual(oldCfg.OutboundConfigs, newCfg.OutboundConfigs)
+	plan.changedRouting = !jsonEqual(oldCfg.RouterConfig, newCfg.RouterConfig)
+	plan.changedReverse = !jsonEqual(oldCfg.Reverse, newCfg.Reverse)
+	if !plan.changedOutbounds && !plan.changedRouting && !plan.changedReverse {
+		plan.runtimeOnly = configsEqualExceptRuntimeSections(oldRaw, newRaw)
+		return plan, nil
+	}
+
+	if !configsEqualExceptRuntimeSections(oldRaw, newRaw) {
+		return plan, nil
+	}
+
+	plan.runtimeOnly = true
+	return plan, nil
+}
+
+func (a *XraySettingController) applyRuntimePlan(plan runtimeApplyPlan) {
+	if plan.changedOutbounds {
+		a.XrayDynamicService.DynamicReplaceOutbounds(string(plan.config.OutboundConfigs), extractPortalTags(plan.config.Reverse)...)
+	}
+	if plan.changedRouting {
+		a.XrayDynamicService.DynamicReplaceRouting(string(plan.config.RouterConfig))
+	}
+	if plan.changedReverse {
+		a.XrayDynamicService.DynamicReplaceReverse(string(plan.config.Reverse))
+	}
+}
+
+func jsonEqual(left, right []byte) bool {
+	var leftAny any
+	var rightAny any
+	if err := json.Unmarshal(left, &leftAny); err != nil {
+		return bytes.Equal(bytes.TrimSpace(left), bytes.TrimSpace(right))
+	}
+	if err := json.Unmarshal(right, &rightAny); err != nil {
+		return bytes.Equal(bytes.TrimSpace(left), bytes.TrimSpace(right))
+	}
+	return reflect.DeepEqual(leftAny, rightAny)
+}
+
+func configsEqualExceptRuntimeSections(leftRaw, rightRaw string) bool {
+	var left map[string]json.RawMessage
+	var right map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(service.UnwrapXrayTemplateConfig(leftRaw)), &left); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(service.UnwrapXrayTemplateConfig(rightRaw)), &right); err != nil {
+		return false
+	}
+	for _, key := range []string{"outbounds", "routing", "reverse"} {
+		delete(left, key)
+		delete(right, key)
+	}
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		return false
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		return false
+	}
+	return jsonEqual(leftJSON, rightJSON)
 }
 
 func hasRuntimeSection(sections []string, wanted string) bool {

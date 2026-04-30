@@ -333,6 +333,63 @@ func TestAPI_MixedAccountUpdatePreservesAndClearsEntitlements(t *testing.T) {
 	}
 }
 
+func TestAPI_UpdateClientAcceptsStringTelegramID(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Shadowsocks",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20085,
+		Protocol:       model.Shadowsocks,
+		Settings:       `{"method":"aes-256-gcm","clients":[{"method":"aes-256-gcm","password":"old-pass","email":"dl-a81aa960-ce3f-4e01-8452-33aa2ba7ad17","enable":true,"tgId":0,"subId":"old","limitIp":0,"totalGB":0,"expiryTime":0,"reset":0}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-shadowsocks",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := doRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/dl-a81aa960-ce3f-4e01-8452-33aa2ba7ad17", map[string]any{
+		"method":     "aes-256-gcm",
+		"password":   "new-pass",
+		"email":      "dl-a81aa960-ce3f-4e01-8452-33aa2ba7ad17",
+		"enable":     true,
+		"tgId":       "0",
+		"subId":      "392aada560b141fe",
+		"limitIp":    0,
+		"totalGB":    107374182400,
+		"expiryTime": 1778885848570,
+		"reset":      0,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Clients []model.Client `json:"clients"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Clients) != 1 {
+		t.Fatalf("expected one client, got %d", len(settings.Clients))
+	}
+	if settings.Clients[0].TgID != 0 {
+		t.Fatalf("expected tgId 0, got %d", settings.Clients[0].TgID)
+	}
+	if settings.Clients[0].Password != "new-pass" {
+		t.Fatalf("expected updated password, got %q", settings.Clients[0].Password)
+	}
+}
+
 func TestAPI_NodeMeta(t *testing.T) {
 	router, dbPath := setupTestRouter(t)
 	defer teardownRouter(dbPath)
