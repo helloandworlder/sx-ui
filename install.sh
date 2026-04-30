@@ -1371,10 +1371,12 @@ install_x-ui() {
 
 main() {
     parse_cli_args "$@"
-    prompt_instance_name
-    apply_instance_paths
     if [[ "${SX_UI_SKIP_LEGACY_TAKEOVER:-0}" != "1" ]] && detect_legacy_xui_install; then
+        xui_instance="${xui_instance:-main}"
         apply_legacy_takeover_paths
+    else
+        prompt_instance_name
+        apply_instance_paths
     fi
     ensure_isolated_instance_layout
     require_root

@@ -168,6 +168,38 @@ test_main_does_not_forward_empty_version() {
   assert_eq "no-args" "${captured_call}" "main should call install_x-ui without an empty version argument"
 }
 
+test_main_legacy_takeover_does_not_prompt_for_instance() {
+  local prompted="0"
+  local captured_folder=""
+  local captured_service=""
+
+  install_base() { :; }
+  require_root() { :; }
+  detect_release() { :; }
+  detect_legacy_xui_install() { return 0; }
+  prompt_instance_name() { prompted="1"; }
+  install_x-ui() {
+    captured_folder="${xui_folder}"
+    captured_service="${xui_service_name}"
+  }
+
+  export XUI_INSTANCE=
+  export XUI_ROOT_FOLDER=/usr/local/sx-ui
+  export XUI_MAIN_FOLDER=
+  export XUI_DB_FOLDER=
+  export XUI_LOG_FOLDER=
+  export XUI_ENV_FILE=
+  export XUI_SERVICE_NAME=
+  install_version=""
+  xui_instance=""
+
+  main >/dev/null 2>&1
+
+  assert_eq "0" "${prompted}" "legacy takeover should not prompt for an instance name"
+  assert_eq "/usr/local/x-ui" "${captured_folder}" "legacy takeover should install into official x-ui folder"
+  assert_eq "x-ui" "${captured_service}" "legacy takeover should keep official x-ui service name"
+}
+
 test_save_db_setting_updates_without_unique_constraint() {
   local tmpdir
   tmpdir="$(mktemp -d)"
@@ -223,6 +255,7 @@ test_auto_port_selection_skips_busy_ports
 test_explicit_busy_port_fails
 test_update_prefers_free_xray_port_when_existing_is_busy
 test_main_does_not_forward_empty_version
+test_main_legacy_takeover_does_not_prompt_for_instance
 test_save_db_setting_updates_without_unique_constraint
 test_configure_sxui_node_writes_to_node_meta_table
 
