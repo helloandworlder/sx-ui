@@ -85,6 +85,7 @@ xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
 instance_hub_mode=false
+sx_ui_legacy_layout=false
 
 sanitize_instance_name() {
     local value="$1"
@@ -120,11 +121,30 @@ prompt_instance_name() {
 }
 
 apply_instance_paths() {
-    xui_folder="${XUI_MAIN_FOLDER:-${xui_root_folder}/${xui_instance}}"
-    log_folder="${XUI_LOG_FOLDER:-/var/log/sx-ui/${xui_instance}}"
-    xui_service_name="${XUI_SERVICE_NAME:-sx-ui-${xui_instance}}"
+    if [[ -d "/usr/local/x-ui" && ( -f "${xui_service}/x-ui.service" || -f "/etc/init.d/x-ui" ) ]]; then
+        sx_ui_legacy_layout=true
+    fi
+
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        xui_folder="${XUI_MAIN_FOLDER:-/usr/local/x-ui}"
+        if [[ -n "${XUI_LOG_FOLDER:-}" && "${XUI_LOG_FOLDER}" != "/var/log/sx-ui/${xui_instance}" ]]; then
+            log_folder="${XUI_LOG_FOLDER}"
+        else
+            log_folder="/var/log/x-ui"
+        fi
+        xui_service_name="${XUI_SERVICE_NAME:-x-ui}"
+        if [[ -n "${XUI_DB_FOLDER:-}" && "${XUI_DB_FOLDER}" != "/etc/sx-ui/${xui_instance}" ]]; then
+            export XUI_DB_FOLDER="${XUI_DB_FOLDER}"
+        else
+            export XUI_DB_FOLDER="/etc/x-ui"
+        fi
+    else
+        xui_folder="${XUI_MAIN_FOLDER:-${xui_root_folder}/${xui_instance}}"
+        log_folder="${XUI_LOG_FOLDER:-/var/log/sx-ui/${xui_instance}}"
+        xui_service_name="${XUI_SERVICE_NAME:-sx-ui-${xui_instance}}"
+        export XUI_DB_FOLDER="${XUI_DB_FOLDER:-/etc/sx-ui/${xui_instance}}"
+    fi
     export XUI_INSTANCE="${xui_instance}"
-    export XUI_DB_FOLDER="${XUI_DB_FOLDER:-/etc/sx-ui/${xui_instance}}"
     export XUI_LOG_FOLDER="${log_folder}"
     export XUI_BIN_FOLDER="${xui_folder}/bin"
     mkdir -p "${log_folder}"

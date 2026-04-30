@@ -72,6 +72,42 @@ test_legacy_shared_runtime_layout_is_rejected() {
   fi
 }
 
+test_legacy_takeover_uses_official_xui_layout() {
+  export XUI_INSTANCE=main
+  export XUI_ROOT_FOLDER=/usr/local/sx-ui
+  export XUI_MAIN_FOLDER=
+  export XUI_DB_FOLDER=
+  export XUI_LOG_FOLDER=
+  export XUI_ENV_FILE=
+  export XUI_SERVICE_NAME=
+
+  xui_instance="${XUI_INSTANCE}"
+  apply_instance_paths
+  apply_legacy_takeover_paths
+
+  assert_eq "/usr/local/x-ui" "${xui_folder}" "legacy takeover should install into official x-ui runtime folder"
+  assert_eq "/etc/x-ui" "${xui_db_folder}" "legacy takeover should keep the official x-ui db folder"
+  assert_eq "/var/log/x-ui" "${xui_log_folder}" "legacy takeover should keep the official x-ui log folder"
+  assert_eq "/etc/default/x-ui" "${xui_env_file}" "legacy takeover should keep the official x-ui env file"
+  assert_eq "x-ui" "${xui_service_name}" "legacy takeover should keep the official x-ui service name"
+}
+
+test_legacy_takeover_layout_is_allowed_when_active() {
+  export XUI_INSTANCE=main
+  export XUI_ROOT_FOLDER=/usr/local/sx-ui
+  export XUI_MAIN_FOLDER=
+  export XUI_DB_FOLDER=
+  export XUI_LOG_FOLDER=
+  export XUI_ENV_FILE=
+  export XUI_SERVICE_NAME=
+
+  xui_instance="${XUI_INSTANCE}"
+  apply_instance_paths
+  apply_legacy_takeover_paths
+
+  ensure_isolated_instance_layout >/dev/null 2>&1
+}
+
 test_auto_port_selection_skips_busy_ports() {
   is_port_in_use() {
     [[ "$1" == "29123" ]]
@@ -181,6 +217,8 @@ test_configure_sxui_node_writes_to_node_meta_table() {
 
 test_source_is_safe_and_defaults_to_isolated_instance_layout
 test_legacy_shared_runtime_layout_is_rejected
+test_legacy_takeover_uses_official_xui_layout
+test_legacy_takeover_layout_is_allowed_when_active
 test_auto_port_selection_skips_busy_ports
 test_explicit_busy_port_fails
 test_update_prefers_free_xray_port_when_existing_is_busy

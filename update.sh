@@ -21,6 +21,7 @@ xui_requested_sub_port="${XUI_SUB_PORT:-}"
 xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
 xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 update_version="${XUI_VERSION:-}"
+sx_ui_legacy_takeover_active=0
 
 # Don't edit this config
 b_source="${BASH_SOURCE[0]}"
@@ -160,7 +161,40 @@ apply_instance_paths() {
     export XUI_BIN_FOLDER="${xui_folder}/bin"
 }
 
+detect_legacy_xui_runtime() {
+    [[ -d "/usr/local/x-ui" ]] && return 0
+    [[ -d "/etc/x-ui" ]] && return 0
+    [[ -f "${xui_service}/x-ui.service" ]] && return 0
+    [[ -f "/etc/init.d/x-ui" ]] && return 0
+    return 1
+}
+
+apply_legacy_takeover_paths() {
+    sx_ui_legacy_takeover_active=1
+    xui_instance="${xui_instance:-main}"
+    xui_folder="${XUI_MAIN_FOLDER:-/usr/local/x-ui}"
+    if [[ -n "${XUI_DB_FOLDER:-}" && "${XUI_DB_FOLDER}" != "/etc/sx-ui/${xui_instance}" ]]; then
+        xui_db_folder="${XUI_DB_FOLDER}"
+    else
+        xui_db_folder="/etc/x-ui"
+    fi
+    if [[ -n "${XUI_LOG_FOLDER:-}" && "${XUI_LOG_FOLDER}" != "/var/log/sx-ui/${xui_instance}" ]]; then
+        xui_log_folder="${XUI_LOG_FOLDER}"
+    else
+        xui_log_folder="/var/log/x-ui"
+    fi
+    xui_env_file="${XUI_ENV_FILE:-/etc/default/x-ui}"
+    xui_service_name="${XUI_SERVICE_NAME:-x-ui}"
+    export XUI_INSTANCE="${xui_instance}"
+    export XUI_DB_FOLDER="${xui_db_folder}"
+    export XUI_LOG_FOLDER="${xui_log_folder}"
+    export XUI_BIN_FOLDER="${xui_folder}/bin"
+}
+
 ensure_isolated_instance_layout() {
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" ]]; then
+        return 0
+    fi
     local normalized_folder="${xui_folder%/}"
     if [[ "${normalized_folder}" == "/usr/local/x-ui" || "${normalized_folder}" == /usr/local/x-ui/* ]]; then
         _fail "Refusing to update sx-ui instance in legacy x-ui runtime path: ${normalized_folder}"
@@ -1142,6 +1176,9 @@ update_x-ui() {
     
     chmod +x ${xui_folder}/x-ui.sh >/dev/null 2>&1
     chmod +x /usr/bin/sx-ui >/dev/null 2>&1
+    if [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
+    fi
     mkdir -p "${xui_log_folder}" >/dev/null 2>&1
     mkdir -p "${xui_db_folder}" >/dev/null 2>&1
     write_instance_env
@@ -1228,6 +1265,9 @@ main() {
     parse_cli_args "$@"
     prompt_instance_name
     apply_instance_paths
+    if detect_legacy_xui_runtime; then
+        apply_legacy_takeover_paths
+    fi
     ensure_isolated_instance_layout
     require_root
     require_curl

@@ -185,17 +185,13 @@ jobs:
             ## Install
 
             ```bash
-            GITHUB_OWNER=${{ github.repository_owner }} \
-            GITHUB_REPO=${{ github.event.repository.name }} \
-            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/main/install.sh) --instance main
+            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ needs.prepare.outputs.release_version }}/install.sh)
             ```
 
             ## Install specific instance
 
             ```bash
-            GITHUB_OWNER=${{ github.repository_owner }} \
-            GITHUB_REPO=${{ github.event.repository.name }} \
-            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/main/install.sh) --instance hk01
+            bash <(curl -Ls https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ needs.prepare.outputs.release_version }}/install.sh) --instance hk01
             ```
 
             ## Docker Image

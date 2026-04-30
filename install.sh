@@ -23,6 +23,7 @@ xui_requested_sub_port="${XUI_SUB_PORT:-}"
 xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
 xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 install_version="${XUI_VERSION:-}"
+sx_ui_legacy_takeover_active=0
 
 parse_cli_args() {
     while [[ $# -gt 0 ]]; do
@@ -119,7 +120,32 @@ apply_instance_paths() {
     export XUI_BIN_FOLDER="${xui_folder}/bin"
 }
 
+apply_legacy_takeover_paths() {
+    sx_ui_legacy_takeover_active=1
+    xui_instance="${xui_instance:-main}"
+    xui_folder="${XUI_MAIN_FOLDER:-/usr/local/x-ui}"
+    if [[ -n "${XUI_DB_FOLDER:-}" && "${XUI_DB_FOLDER}" != "/etc/sx-ui/${xui_instance}" ]]; then
+        xui_db_folder="${XUI_DB_FOLDER}"
+    else
+        xui_db_folder="/etc/x-ui"
+    fi
+    if [[ -n "${XUI_LOG_FOLDER:-}" && "${XUI_LOG_FOLDER}" != "/var/log/sx-ui/${xui_instance}" ]]; then
+        xui_log_folder="${XUI_LOG_FOLDER}"
+    else
+        xui_log_folder="/var/log/x-ui"
+    fi
+    xui_env_file="${XUI_ENV_FILE:-/etc/default/x-ui}"
+    xui_service_name="${XUI_SERVICE_NAME:-x-ui}"
+    export XUI_INSTANCE="${xui_instance}"
+    export XUI_DB_FOLDER="${xui_db_folder}"
+    export XUI_LOG_FOLDER="${xui_log_folder}"
+    export XUI_BIN_FOLDER="${xui_folder}/bin"
+}
+
 ensure_isolated_instance_layout() {
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" ]]; then
+        return 0
+    fi
     local normalized_folder="${xui_folder%/}"
     if [[ "${normalized_folder}" == "/usr/local/x-ui" || "${normalized_folder}" == /usr/local/x-ui/* ]]; then
         echo -e "${red}Refusing to install sx-ui instance into legacy x-ui runtime path: ${normalized_folder}${plain}" >&2
@@ -141,7 +167,10 @@ detect_legacy_xui_install() {
     [[ -d "/etc/x-ui" ]] && return 0
     [[ -f "${xui_service}/x-ui.service" ]] && return 0
     [[ -f "/etc/init.d/x-ui" ]] && return 0
-    [[ -e "/usr/bin/x-ui" ]] && return 0
+    if [[ -e "/usr/bin/x-ui" || -L "/usr/bin/x-ui" ]]; then
+        [[ -L "/usr/bin/x-ui" && "$(readlink "/usr/bin/x-ui")" == "/usr/bin/sx-ui" ]] && return 1
+        return 0
+    fi
     return 1
 }
 
@@ -166,6 +195,8 @@ takeover_legacy_xui() {
         return 0
     fi
 
+    apply_legacy_takeover_paths
+
     local ts
     ts="$(date +%Y%m%d%H%M%S)"
     local backup_dir="${SX_UI_LEGACY_BACKUP_DIR:-/var/backups/sx-ui/legacy-x-ui-${ts}}"
@@ -181,24 +212,24 @@ takeover_legacy_xui() {
         rc-update del x-ui >/dev/null 2>&1 || true
     fi
 
-    mkdir -p "${xui_db_folder}" "${xui_log_folder}" "${backup_dir}"
-    if [[ ! -f "${xui_db_folder}/x-ui.db" ]]; then
-        if [[ -f "/etc/x-ui/x-ui.db" ]]; then
-            cp -a "/etc/x-ui/x-ui.db" "${xui_db_folder}/x-ui.db"
-            echo -e "${green}Migrated legacy database /etc/x-ui/x-ui.db -> ${xui_db_folder}/x-ui.db${plain}"
-        elif [[ -f "/usr/local/x-ui/db/x-ui.db" ]]; then
-            cp -a "/usr/local/x-ui/db/x-ui.db" "${xui_db_folder}/x-ui.db"
-            echo -e "${green}Migrated legacy database /usr/local/x-ui/db/x-ui.db -> ${xui_db_folder}/x-ui.db${plain}"
-        fi
-    else
-        echo -e "${yellow}sx-ui database already exists at ${xui_db_folder}/x-ui.db; legacy DB copied only to backup.${plain}"
-    fi
+    mkdir -p "${backup_dir}"
 
     backup_and_move_legacy_path "/usr/local/x-ui" "${backup_dir}"
     backup_and_move_legacy_path "/etc/x-ui" "${backup_dir}"
     backup_and_move_legacy_path "${xui_service}/x-ui.service" "${backup_dir}"
     backup_and_move_legacy_path "/etc/init.d/x-ui" "${backup_dir}"
     backup_and_move_legacy_path "/usr/bin/x-ui" "${backup_dir}"
+
+    mkdir -p "${xui_db_folder}" "${xui_log_folder}"
+    if [[ ! -f "${xui_db_folder}/x-ui.db" ]]; then
+        if [[ -f "${backup_dir}/etc__x-ui/x-ui.db" ]]; then
+            cp -a "${backup_dir}/etc__x-ui/x-ui.db" "${xui_db_folder}/x-ui.db"
+            echo -e "${green}Restored legacy database into ${xui_db_folder}/x-ui.db${plain}"
+        elif [[ -f "${backup_dir}/usr__local__x-ui/db/x-ui.db" ]]; then
+            cp -a "${backup_dir}/usr__local__x-ui/db/x-ui.db" "${xui_db_folder}/x-ui.db"
+            echo -e "${green}Restored legacy database into ${xui_db_folder}/x-ui.db${plain}"
+        fi
+    fi
 }
 
 resolve_service_name() {
@@ -1342,6 +1373,9 @@ main() {
     parse_cli_args "$@"
     prompt_instance_name
     apply_instance_paths
+    if [[ "${SX_UI_SKIP_LEGACY_TAKEOVER:-0}" != "1" ]] && detect_legacy_xui_install; then
+        apply_legacy_takeover_paths
+    fi
     ensure_isolated_instance_layout
     require_root
     detect_release
