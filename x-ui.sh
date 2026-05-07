@@ -10,6 +10,46 @@ GITHUB_OWNER="${GITHUB_OWNER:-helloandworlder}"
 GITHUB_REPO="${GITHUB_REPO:-sx-ui}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
+GITHUB_RELEASE_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
+
+latest_release_raw_base() {
+    local tag
+    tag="$(curl -Ls "${GITHUB_RELEASE_API}" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
+    if [[ -z "${tag}" ]]; then
+        tag="$(curl -4 -Ls "${GITHUB_RELEASE_API}" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
+    fi
+    if [[ -n "${tag}" ]]; then
+        echo "https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${tag}"
+        return 0
+    fi
+    echo "${GITHUB_RAW_BASE}"
+}
+
+download_release_script() {
+    local script_name="$1"
+    local target="$2"
+    local release_raw_base
+    release_raw_base="$(latest_release_raw_base)"
+    curl -fLRo "${target}" "${release_raw_base}/${script_name}" 2>/dev/null \
+        || curl -4fLRo "${target}" "${release_raw_base}/${script_name}" 2>/dev/null \
+        || curl -fLRo "${target}" "${GITHUB_RAW_BASE}/${script_name}" 2>/dev/null
+}
+
+run_release_script() {
+    local script_name="$1"
+    local tmp_file
+    tmp_file="$(mktemp)"
+    if ! download_release_script "${script_name}" "${tmp_file}"; then
+        rm -f "${tmp_file}"
+        LOGE "Failed to download ${script_name}, Please check whether the machine can connect Github"
+        return 1
+    fi
+    chmod +x "${tmp_file}"
+    bash "${tmp_file}" --instance "${xui_instance}"
+    local rc=$?
+    rm -f "${tmp_file}"
+    return ${rc}
+}
 
 #Add some basic function here
 function LOGD() {
@@ -85,6 +125,7 @@ xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
 instance_hub_mode=false
+sx_ui_legacy_layout=false
 
 sanitize_instance_name() {
     local value="$1"
@@ -120,11 +161,30 @@ prompt_instance_name() {
 }
 
 apply_instance_paths() {
-    xui_folder="${XUI_MAIN_FOLDER:-${xui_root_folder}/${xui_instance}}"
-    log_folder="${XUI_LOG_FOLDER:-/var/log/sx-ui/${xui_instance}}"
-    xui_service_name="${XUI_SERVICE_NAME:-sx-ui-${xui_instance}}"
+    if [[ -d "/usr/local/x-ui" && ( -f "${xui_service}/x-ui.service" || -f "/etc/init.d/x-ui" ) ]]; then
+        sx_ui_legacy_layout=true
+    fi
+
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        xui_folder="${XUI_MAIN_FOLDER:-/usr/local/x-ui}"
+        if [[ -n "${XUI_LOG_FOLDER:-}" && "${XUI_LOG_FOLDER}" != "/var/log/sx-ui/${xui_instance}" ]]; then
+            log_folder="${XUI_LOG_FOLDER}"
+        else
+            log_folder="/var/log/x-ui"
+        fi
+        xui_service_name="${XUI_SERVICE_NAME:-x-ui}"
+        if [[ -n "${XUI_DB_FOLDER:-}" && "${XUI_DB_FOLDER}" != "/etc/sx-ui/${xui_instance}" ]]; then
+            export XUI_DB_FOLDER="${XUI_DB_FOLDER}"
+        else
+            export XUI_DB_FOLDER="/etc/x-ui"
+        fi
+    else
+        xui_folder="${XUI_MAIN_FOLDER:-${xui_root_folder}/${xui_instance}}"
+        log_folder="${XUI_LOG_FOLDER:-/var/log/sx-ui/${xui_instance}}"
+        xui_service_name="${XUI_SERVICE_NAME:-sx-ui-${xui_instance}}"
+        export XUI_DB_FOLDER="${XUI_DB_FOLDER:-/etc/sx-ui/${xui_instance}}"
+    fi
     export XUI_INSTANCE="${xui_instance}"
-    export XUI_DB_FOLDER="${XUI_DB_FOLDER:-/etc/sx-ui/${xui_instance}}"
     export XUI_LOG_FOLDER="${log_folder}"
     export XUI_BIN_FOLDER="${xui_folder}/bin"
     mkdir -p "${log_folder}"
@@ -291,7 +351,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls ${GITHUB_RAW_BASE}/install.sh) --instance "${xui_instance}"
+    run_release_script "install.sh"
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -310,7 +370,7 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls ${GITHUB_RAW_BASE}/update.sh) --instance "${xui_instance}"
+    run_release_script "update.sh"
     if [[ $? == 0 ]]; then
         LOGI "Update is complete, Panel has automatically restarted "
         before_show_menu
@@ -328,9 +388,16 @@ update_menu() {
         return 0
     fi
 
-    curl -fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh
+    local cli_target="/usr/bin/sx-ui"
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        cli_target="/usr/bin/x-ui"
+    fi
+    download_release_script "x-ui.sh" "${cli_target}"
     chmod +x ${xui_folder}/x-ui.sh
-    chmod +x /usr/bin/sx-ui
+    chmod +x "${cli_target}"
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+    fi
 
     if [[ $? == 0 ]]; then
         echo -e "${green}Update successful. The panel has automatically restarted.${plain}"
@@ -789,13 +856,20 @@ enable_bbr() {
 }
 
 update_shell() {
-    curl -fLRo /usr/bin/sx-ui -z /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh
+    local cli_target="/usr/bin/sx-ui"
+    if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+        cli_target="/usr/bin/x-ui"
+    fi
+    curl -fLRo "${cli_target}" -z "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh
     if [[ $? != 0 ]]; then
         echo ""
         LOGE "Failed to download script, Please check whether the machine can connect Github"
         before_show_menu
     else
-        chmod +x /usr/bin/sx-ui
+        chmod +x "${cli_target}"
+        if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
+            ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+        fi
         LOGI "Upgrade script succeeded, Please rerun the script"
         before_show_menu
     fi

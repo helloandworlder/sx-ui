@@ -13,6 +13,10 @@ GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO
 GITHUB_RELEASE_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download"
 
+github_raw_base_for_ref() {
+    echo "https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/$1"
+}
+
 cur_dir=$(pwd)
 
 xui_instance="${XUI_INSTANCE:-}"
@@ -23,6 +27,7 @@ xui_requested_sub_port="${XUI_SUB_PORT:-}"
 xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
 xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 install_version="${XUI_VERSION:-}"
+sx_ui_legacy_takeover_active=0
 
 parse_cli_args() {
     while [[ $# -gt 0 ]]; do
@@ -119,7 +124,32 @@ apply_instance_paths() {
     export XUI_BIN_FOLDER="${xui_folder}/bin"
 }
 
+apply_legacy_takeover_paths() {
+    sx_ui_legacy_takeover_active=1
+    xui_instance="${xui_instance:-main}"
+    xui_folder="${XUI_MAIN_FOLDER:-/usr/local/x-ui}"
+    if [[ -n "${XUI_DB_FOLDER:-}" && "${XUI_DB_FOLDER}" != "/etc/sx-ui/${xui_instance}" ]]; then
+        xui_db_folder="${XUI_DB_FOLDER}"
+    else
+        xui_db_folder="/etc/x-ui"
+    fi
+    if [[ -n "${XUI_LOG_FOLDER:-}" && "${XUI_LOG_FOLDER}" != "/var/log/sx-ui/${xui_instance}" ]]; then
+        xui_log_folder="${XUI_LOG_FOLDER}"
+    else
+        xui_log_folder="/var/log/x-ui"
+    fi
+    xui_env_file="${XUI_ENV_FILE:-/etc/default/x-ui}"
+    xui_service_name="${XUI_SERVICE_NAME:-x-ui}"
+    export XUI_INSTANCE="${xui_instance}"
+    export XUI_DB_FOLDER="${xui_db_folder}"
+    export XUI_LOG_FOLDER="${xui_log_folder}"
+    export XUI_BIN_FOLDER="${xui_folder}/bin"
+}
+
 ensure_isolated_instance_layout() {
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" ]]; then
+        return 0
+    fi
     local normalized_folder="${xui_folder%/}"
     if [[ "${normalized_folder}" == "/usr/local/x-ui" || "${normalized_folder}" == /usr/local/x-ui/* ]]; then
         echo -e "${red}Refusing to install sx-ui instance into legacy x-ui runtime path: ${normalized_folder}${plain}" >&2
@@ -134,6 +164,76 @@ ensure_isolated_instance_layout() {
         return 1
     fi
     return 0
+}
+
+detect_legacy_xui_install() {
+    [[ -d "/usr/local/x-ui" ]] && return 0
+    [[ -d "/etc/x-ui" ]] && return 0
+    [[ -f "${xui_service}/x-ui.service" ]] && return 0
+    [[ -f "/etc/init.d/x-ui" ]] && return 0
+    if [[ -e "/usr/bin/x-ui" || -L "/usr/bin/x-ui" ]]; then
+        [[ -L "/usr/bin/x-ui" && "$(readlink "/usr/bin/x-ui")" == "/usr/bin/sx-ui" ]] && return 1
+        return 0
+    fi
+    return 1
+}
+
+backup_and_move_legacy_path() {
+    local path="$1"
+    local backup_dir="$2"
+    local label
+    label="$(echo "${path}" | sed 's#^/##; s#/#__#g')"
+    if [[ -e "${path}" || -L "${path}" ]]; then
+        mkdir -p "${backup_dir}"
+        mv "${path}" "${backup_dir}/${label}"
+        echo -e "${green}Backed up legacy ${path} -> ${backup_dir}/${label}${plain}"
+    fi
+}
+
+takeover_legacy_xui() {
+    if [[ "${SX_UI_SKIP_LEGACY_TAKEOVER:-0}" == "1" ]]; then
+        echo -e "${yellow}Skipping legacy 3x-ui takeover because SX_UI_SKIP_LEGACY_TAKEOVER=1${plain}"
+        return 0
+    fi
+    if ! detect_legacy_xui_install; then
+        return 0
+    fi
+
+    apply_legacy_takeover_paths
+
+    local ts
+    ts="$(date +%Y%m%d%H%M%S)"
+    local backup_dir="${SX_UI_LEGACY_BACKUP_DIR:-/var/backups/sx-ui/legacy-x-ui-${ts}}"
+    echo -e "${yellow}Detected legacy 3x-ui installation; sx-ui will back it up and take over.${plain}"
+    echo -e "${yellow}Backup directory: ${backup_dir}${plain}"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop x-ui >/dev/null 2>&1 || true
+        systemctl disable x-ui >/dev/null 2>&1 || true
+    fi
+    if command -v rc-service >/dev/null 2>&1; then
+        rc-service x-ui stop >/dev/null 2>&1 || true
+        rc-update del x-ui >/dev/null 2>&1 || true
+    fi
+
+    mkdir -p "${backup_dir}"
+
+    backup_and_move_legacy_path "/usr/local/x-ui" "${backup_dir}"
+    backup_and_move_legacy_path "/etc/x-ui" "${backup_dir}"
+    backup_and_move_legacy_path "${xui_service}/x-ui.service" "${backup_dir}"
+    backup_and_move_legacy_path "/etc/init.d/x-ui" "${backup_dir}"
+    backup_and_move_legacy_path "/usr/bin/x-ui" "${backup_dir}"
+
+    mkdir -p "${xui_db_folder}" "${xui_log_folder}"
+    if [[ ! -f "${xui_db_folder}/x-ui.db" ]]; then
+        if [[ -f "${backup_dir}/etc__x-ui/x-ui.db" ]]; then
+            cp -a "${backup_dir}/etc__x-ui/x-ui.db" "${xui_db_folder}/x-ui.db"
+            echo -e "${green}Restored legacy database into ${xui_db_folder}/x-ui.db${plain}"
+        elif [[ -f "${backup_dir}/usr__local__x-ui/db/x-ui.db" ]]; then
+            cp -a "${backup_dir}/usr__local__x-ui/db/x-ui.db" "${xui_db_folder}/x-ui.db"
+            echo -e "${green}Restored legacy database into ${xui_db_folder}/x-ui.db${plain}"
+        fi
+    fi
 }
 
 resolve_service_name() {
@@ -1137,8 +1237,10 @@ install_x-ui() {
     local archive_name="sx-ui-linux-$(arch).tar.gz"
     local bundle_dir="sx-ui"
     local temp_dir
+    local release_raw_base
     temp_dir="$(mktemp -d)"
     mkdir -p "$(dirname "${xui_folder}")"
+    takeover_legacy_xui
     
     # Download resources
     if [ $# == 0 ]; then
@@ -1175,7 +1277,8 @@ install_x-ui() {
             exit 1
         fi
     fi
-    curl -4fLRo /usr/bin/sx-ui-temp ${GITHUB_RAW_BASE}/x-ui.sh
+    release_raw_base="$(github_raw_base_for_ref "${tag_version}")"
+    curl -4fLRo /usr/bin/sx-ui-temp "${release_raw_base}/x-ui.sh"
     if [[ $? -ne 0 ]]; then
         echo -e "${red}Failed to download sx-ui.sh${plain}"
         exit 1
@@ -1208,9 +1311,21 @@ install_x-ui() {
     fi
     chmod +x x-ui bin/xray-linux-$(arch)
     
-    # Update x-ui cli and se set permission
-    mv -f /usr/bin/sx-ui-temp /usr/bin/sx-ui
-    chmod +x /usr/bin/sx-ui
+    # Keep the installed service and the primary CLI under the same x-ui name
+    # when sx-ui is taking over an existing 3x-ui runtime.
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        mv -f /usr/bin/sx-ui-temp /usr/bin/x-ui
+        chmod +x /usr/bin/x-ui
+        ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+        echo -e "${green}Legacy x-ui command now manages the sx-ui takeover runtime.${plain}"
+    else
+        mv -f /usr/bin/sx-ui-temp /usr/bin/sx-ui
+        chmod +x /usr/bin/sx-ui
+        if [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+            ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
+            echo -e "${green}Legacy x-ui command now points to sx-ui.${plain}"
+        fi
+    fi
     mkdir -p "${xui_db_folder}" "${xui_log_folder}"
     write_instance_env
     config_after_install
@@ -1230,7 +1345,7 @@ install_x-ui() {
     fi
     
     if [[ $release == "alpine" ]]; then
-        curl -4fLRo "/etc/init.d/${xui_service_name}" ${GITHUB_RAW_BASE}/x-ui.rc
+        curl -4fLRo "/etc/init.d/${xui_service_name}" "${release_raw_base}/x-ui.rc"
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Failed to download sx-ui.rc${plain}"
             exit 1
@@ -1270,8 +1385,13 @@ install_x-ui() {
 
 main() {
     parse_cli_args "$@"
-    prompt_instance_name
-    apply_instance_paths
+    if [[ "${SX_UI_SKIP_LEGACY_TAKEOVER:-0}" != "1" ]] && detect_legacy_xui_install; then
+        xui_instance="${xui_instance:-main}"
+        apply_legacy_takeover_paths
+    else
+        prompt_instance_name
+        apply_instance_paths
+    fi
     ensure_isolated_instance_layout
     require_root
     detect_release

@@ -13,6 +13,10 @@ GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO
 GITHUB_RELEASE_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download"
 
+github_raw_base_for_ref() {
+    echo "https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/$1"
+}
+
 xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
@@ -21,6 +25,7 @@ xui_requested_sub_port="${XUI_SUB_PORT:-}"
 xui_requested_xray_api_port="${XUI_XRAY_API_PORT:-}"
 xui_requested_xray_metrics_port="${XUI_XRAY_METRICS_PORT:-}"
 update_version="${XUI_VERSION:-}"
+sx_ui_legacy_takeover_active=0
 
 # Don't edit this config
 b_source="${BASH_SOURCE[0]}"
@@ -160,7 +165,40 @@ apply_instance_paths() {
     export XUI_BIN_FOLDER="${xui_folder}/bin"
 }
 
+detect_legacy_xui_runtime() {
+    [[ -d "/usr/local/x-ui" ]] && return 0
+    [[ -d "/etc/x-ui" ]] && return 0
+    [[ -f "${xui_service}/x-ui.service" ]] && return 0
+    [[ -f "/etc/init.d/x-ui" ]] && return 0
+    return 1
+}
+
+apply_legacy_takeover_paths() {
+    sx_ui_legacy_takeover_active=1
+    xui_instance="${xui_instance:-main}"
+    xui_folder="${XUI_MAIN_FOLDER:-/usr/local/x-ui}"
+    if [[ -n "${XUI_DB_FOLDER:-}" && "${XUI_DB_FOLDER}" != "/etc/sx-ui/${xui_instance}" ]]; then
+        xui_db_folder="${XUI_DB_FOLDER}"
+    else
+        xui_db_folder="/etc/x-ui"
+    fi
+    if [[ -n "${XUI_LOG_FOLDER:-}" && "${XUI_LOG_FOLDER}" != "/var/log/sx-ui/${xui_instance}" ]]; then
+        xui_log_folder="${XUI_LOG_FOLDER}"
+    else
+        xui_log_folder="/var/log/x-ui"
+    fi
+    xui_env_file="${XUI_ENV_FILE:-/etc/default/x-ui}"
+    xui_service_name="${XUI_SERVICE_NAME:-x-ui}"
+    export XUI_INSTANCE="${xui_instance}"
+    export XUI_DB_FOLDER="${xui_db_folder}"
+    export XUI_LOG_FOLDER="${xui_log_folder}"
+    export XUI_BIN_FOLDER="${xui_folder}/bin"
+}
+
 ensure_isolated_instance_layout() {
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" ]]; then
+        return 0
+    fi
     local normalized_folder="${xui_folder%/}"
     if [[ "${normalized_folder}" == "/usr/local/x-ui" || "${normalized_folder}" == /usr/local/x-ui/* ]]; then
         _fail "Refusing to update sx-ui instance in legacy x-ui runtime path: ${normalized_folder}"
@@ -1039,6 +1077,7 @@ update_x-ui() {
     local archive_name="sx-ui-linux-$(arch).tar.gz"
     local bundle_dir="sx-ui"
     local temp_dir
+    local release_raw_base
     temp_dir="$(mktemp -d)"
     mkdir -p "$(dirname "${xui_folder}")"
     
@@ -1065,6 +1104,7 @@ update_x-ui() {
         fi
         echo -e "Got sx-ui latest version: ${tag_version}, beginning the installation..."
     fi
+    release_raw_base="$(github_raw_base_for_ref "${tag_version}")"
     ${curl_bin} -fLRo "${temp_dir}/${archive_name}" "${GITHUB_RELEASE_DOWNLOAD_BASE}/${tag_version}/${archive_name}" 2>/dev/null
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
@@ -1131,17 +1171,26 @@ update_x-ui() {
     chmod +x x-ui bin/xray-linux-$(arch) >/dev/null 2>&1
     
     echo -e "${green}Downloading and installing sx-ui.sh script...${plain}"
-    ${curl_bin} -fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
+    local cli_target="/usr/bin/sx-ui"
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        cli_target="/usr/bin/x-ui"
+    fi
+    ${curl_bin} -fLRo "${cli_target}" "${release_raw_base}/x-ui.sh" >/dev/null 2>&1
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch sx-ui with IPv4...${plain}"
-        ${curl_bin} -4fLRo /usr/bin/sx-ui ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
+        ${curl_bin} -4fLRo "${cli_target}" "${release_raw_base}/x-ui.sh" >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download sx-ui.sh script, please be sure that your server can access GitHub"
         fi
     fi
     
     chmod +x ${xui_folder}/x-ui.sh >/dev/null 2>&1
-    chmod +x /usr/bin/sx-ui >/dev/null 2>&1
+    chmod +x "${cli_target}" >/dev/null 2>&1
+    if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        ln -sfn /usr/bin/x-ui /usr/bin/sx-ui
+    elif [[ "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
+        ln -sfn /usr/bin/sx-ui /usr/bin/x-ui
+    fi
     mkdir -p "${xui_log_folder}" >/dev/null 2>&1
     mkdir -p "${xui_db_folder}" >/dev/null 2>&1
     write_instance_env
@@ -1181,9 +1230,9 @@ update_x-ui() {
     
     if [[ $release == "alpine" ]]; then
         echo -e "${green}Downloading and installing startup unit sx-ui.rc...${plain}"
-        ${curl_bin} -fLRo "/etc/init.d/${xui_service_name}" ${GITHUB_RAW_BASE}/x-ui.rc >/dev/null 2>&1
+        ${curl_bin} -fLRo "/etc/init.d/${xui_service_name}" "${release_raw_base}/x-ui.rc" >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
-            ${curl_bin} -4fLRo "/etc/init.d/${xui_service_name}" ${GITHUB_RAW_BASE}/x-ui.rc >/dev/null 2>&1
+            ${curl_bin} -4fLRo "/etc/init.d/${xui_service_name}" "${release_raw_base}/x-ui.rc" >/dev/null 2>&1
             if [[ $? -ne 0 ]]; then
                 _fail "ERROR: Failed to download startup unit sx-ui.rc, please be sure that your server can access GitHub"
             fi
@@ -1228,6 +1277,9 @@ main() {
     parse_cli_args "$@"
     prompt_instance_name
     apply_instance_paths
+    if detect_legacy_xui_runtime; then
+        apply_legacy_takeover_paths
+    fi
     ensure_isolated_instance_layout
     require_root
     require_curl
