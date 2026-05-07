@@ -13,6 +13,10 @@ GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO
 GITHUB_RELEASE_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download"
 
+github_raw_base_for_ref() {
+    echo "https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/$1"
+}
+
 cur_dir=$(pwd)
 
 xui_instance="${XUI_INSTANCE:-}"
@@ -1233,6 +1237,7 @@ install_x-ui() {
     local archive_name="sx-ui-linux-$(arch).tar.gz"
     local bundle_dir="sx-ui"
     local temp_dir
+    local release_raw_base
     temp_dir="$(mktemp -d)"
     mkdir -p "$(dirname "${xui_folder}")"
     takeover_legacy_xui
@@ -1272,7 +1277,8 @@ install_x-ui() {
             exit 1
         fi
     fi
-    curl -4fLRo /usr/bin/sx-ui-temp ${GITHUB_RAW_BASE}/x-ui.sh
+    release_raw_base="$(github_raw_base_for_ref "${tag_version}")"
+    curl -4fLRo /usr/bin/sx-ui-temp "${release_raw_base}/x-ui.sh"
     if [[ $? -ne 0 ]]; then
         echo -e "${red}Failed to download sx-ui.sh${plain}"
         exit 1
@@ -1339,7 +1345,7 @@ install_x-ui() {
     fi
     
     if [[ $release == "alpine" ]]; then
-        curl -4fLRo "/etc/init.d/${xui_service_name}" ${GITHUB_RAW_BASE}/x-ui.rc
+        curl -4fLRo "/etc/init.d/${xui_service_name}" "${release_raw_base}/x-ui.rc"
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Failed to download sx-ui.rc${plain}"
             exit 1

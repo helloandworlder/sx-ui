@@ -13,6 +13,10 @@ GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO
 GITHUB_RELEASE_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
 GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download"
 
+github_raw_base_for_ref() {
+    echo "https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/$1"
+}
+
 xui_instance="${XUI_INSTANCE:-}"
 xui_root_folder="${XUI_ROOT_FOLDER:-/usr/local/sx-ui}"
 xui_service="${XUI_SERVICE:-/etc/systemd/system}"
@@ -1073,6 +1077,7 @@ update_x-ui() {
     local archive_name="sx-ui-linux-$(arch).tar.gz"
     local bundle_dir="sx-ui"
     local temp_dir
+    local release_raw_base
     temp_dir="$(mktemp -d)"
     mkdir -p "$(dirname "${xui_folder}")"
     
@@ -1099,6 +1104,7 @@ update_x-ui() {
         fi
         echo -e "Got sx-ui latest version: ${tag_version}, beginning the installation..."
     fi
+    release_raw_base="$(github_raw_base_for_ref "${tag_version}")"
     ${curl_bin} -fLRo "${temp_dir}/${archive_name}" "${GITHUB_RELEASE_DOWNLOAD_BASE}/${tag_version}/${archive_name}" 2>/dev/null
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
@@ -1169,10 +1175,10 @@ update_x-ui() {
     if [[ "${sx_ui_legacy_takeover_active}" == "1" && "${SX_UI_TAKEOVER_LEGACY_CLI:-1}" == "1" ]]; then
         cli_target="/usr/bin/x-ui"
     fi
-    ${curl_bin} -fLRo "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
+    ${curl_bin} -fLRo "${cli_target}" "${release_raw_base}/x-ui.sh" >/dev/null 2>&1
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch sx-ui with IPv4...${plain}"
-        ${curl_bin} -4fLRo "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh >/dev/null 2>&1
+        ${curl_bin} -4fLRo "${cli_target}" "${release_raw_base}/x-ui.sh" >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download sx-ui.sh script, please be sure that your server can access GitHub"
         fi
@@ -1224,9 +1230,9 @@ update_x-ui() {
     
     if [[ $release == "alpine" ]]; then
         echo -e "${green}Downloading and installing startup unit sx-ui.rc...${plain}"
-        ${curl_bin} -fLRo "/etc/init.d/${xui_service_name}" ${GITHUB_RAW_BASE}/x-ui.rc >/dev/null 2>&1
+        ${curl_bin} -fLRo "/etc/init.d/${xui_service_name}" "${release_raw_base}/x-ui.rc" >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
-            ${curl_bin} -4fLRo "/etc/init.d/${xui_service_name}" ${GITHUB_RAW_BASE}/x-ui.rc >/dev/null 2>&1
+            ${curl_bin} -4fLRo "/etc/init.d/${xui_service_name}" "${release_raw_base}/x-ui.rc" >/dev/null 2>&1
             if [[ $? -ne 0 ]]; then
                 _fail "ERROR: Failed to download startup unit sx-ui.rc, please be sure that your server can access GitHub"
             fi

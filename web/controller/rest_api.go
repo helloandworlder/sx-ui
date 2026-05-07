@@ -20,8 +20,6 @@ import (
 // RestAPIController exposes a RESTful /api/v1 surface for GoSea management.
 type RestAPIController struct {
 	inboundService   service.InboundService
-	outboundService  service.OutboundCrudService
-	routingService   service.RoutingCrudService
 	rateLimitService service.RateLimitService
 	configSeqService service.ConfigSeqService
 	nodeMetaService  service.NodeMetaService
@@ -398,20 +396,6 @@ func splitRateLimitBps(bps int64) (float64, string) {
 func rateLimitView(bps int64) gin.H {
 	value, unit := splitRateLimitBps(bps)
 	return gin.H{"bps": bps, "value": value, "unit": unit}
-}
-
-func extractRuleTag(ruleJSON string) string {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(ruleJSON), &payload); err != nil {
-		return ""
-	}
-	if tag, ok := payload["ruleTag"].(string); ok {
-		return tag
-	}
-	if tag, ok := payload["rule_tag"].(string); ok {
-		return tag
-	}
-	return ""
 }
 
 func validateRuleJSON(ruleJSON string) error {
@@ -1079,7 +1063,7 @@ func (a *RestAPIController) getOutbound(c *gin.Context) {
 	if !ok {
 		return
 	}
-	out, err := a.xrayTemplateService().GetOutboundById(id)
+	out, err := a.xrayTemplateService().GetOutboundByID(id)
 	if err != nil {
 		a.fail(c, http.StatusNotFound, "outbound not found")
 		return
@@ -1186,7 +1170,7 @@ func (a *RestAPIController) deleteRoute(c *gin.Context) {
 
 func (a *RestAPIController) reorderRoutes(c *gin.Context) {
 	var items []struct {
-		Id       int `json:"id"`
+		ID       int `json:"id"`
 		Priority int `json:"priority"`
 	}
 	if err := c.ShouldBindJSON(&items); err != nil {

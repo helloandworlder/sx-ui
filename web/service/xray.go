@@ -23,12 +23,10 @@ var (
 // XrayService provides business logic for Xray process management.
 // It handles starting, stopping, restarting Xray, and managing its configuration.
 type XrayService struct {
-	inboundService      InboundService
-	settingService      SettingService
-	outboundCrudService OutboundCrudService
-	routingCrudService  RoutingCrudService
-	nodeMetaService     NodeMetaService
-	xrayAPI             xray.XrayAPI
+	inboundService  InboundService
+	settingService  SettingService
+	nodeMetaService NodeMetaService
+	xrayAPI         xray.XrayAPI
 }
 
 // IsXrayRunning checks if the Xray process is currently running.

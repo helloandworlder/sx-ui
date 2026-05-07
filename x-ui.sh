@@ -10,6 +10,46 @@ GITHUB_OWNER="${GITHUB_OWNER:-helloandworlder}"
 GITHUB_REPO="${GITHUB_REPO:-sx-ui}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
+GITHUB_RELEASE_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest"
+
+latest_release_raw_base() {
+    local tag
+    tag="$(curl -Ls "${GITHUB_RELEASE_API}" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
+    if [[ -z "${tag}" ]]; then
+        tag="$(curl -4 -Ls "${GITHUB_RELEASE_API}" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
+    fi
+    if [[ -n "${tag}" ]]; then
+        echo "https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${tag}"
+        return 0
+    fi
+    echo "${GITHUB_RAW_BASE}"
+}
+
+download_release_script() {
+    local script_name="$1"
+    local target="$2"
+    local release_raw_base
+    release_raw_base="$(latest_release_raw_base)"
+    curl -fLRo "${target}" "${release_raw_base}/${script_name}" 2>/dev/null \
+        || curl -4fLRo "${target}" "${release_raw_base}/${script_name}" 2>/dev/null \
+        || curl -fLRo "${target}" "${GITHUB_RAW_BASE}/${script_name}" 2>/dev/null
+}
+
+run_release_script() {
+    local script_name="$1"
+    local tmp_file
+    tmp_file="$(mktemp)"
+    if ! download_release_script "${script_name}" "${tmp_file}"; then
+        rm -f "${tmp_file}"
+        LOGE "Failed to download ${script_name}, Please check whether the machine can connect Github"
+        return 1
+    fi
+    chmod +x "${tmp_file}"
+    bash "${tmp_file}" --instance "${xui_instance}"
+    local rc=$?
+    rm -f "${tmp_file}"
+    return ${rc}
+}
 
 #Add some basic function here
 function LOGD() {
@@ -311,7 +351,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls ${GITHUB_RAW_BASE}/install.sh) --instance "${xui_instance}"
+    run_release_script "install.sh"
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -330,7 +370,7 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls ${GITHUB_RAW_BASE}/update.sh) --instance "${xui_instance}"
+    run_release_script "update.sh"
     if [[ $? == 0 ]]; then
         LOGI "Update is complete, Panel has automatically restarted "
         before_show_menu
@@ -352,7 +392,7 @@ update_menu() {
     if [[ "${sx_ui_legacy_layout}" == "true" ]]; then
         cli_target="/usr/bin/x-ui"
     fi
-    curl -fLRo "${cli_target}" ${GITHUB_RAW_BASE}/x-ui.sh
+    download_release_script "x-ui.sh" "${cli_target}"
     chmod +x ${xui_folder}/x-ui.sh
     chmod +x "${cli_target}"
     if [[ "${sx_ui_legacy_layout}" == "true" ]]; then

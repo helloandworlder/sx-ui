@@ -127,7 +127,7 @@ func (s *XrayTemplateConfigService) GetOutbounds() ([]model.Outbound, error) {
 	return outbounds, nil
 }
 
-func (s *XrayTemplateConfigService) GetOutboundById(id int) (*model.Outbound, error) {
+func (s *XrayTemplateConfigService) GetOutboundByID(id int) (*model.Outbound, error) {
 	outbounds, err := s.GetOutbounds()
 	if err != nil {
 		return nil, err
@@ -270,7 +270,7 @@ func (s *XrayTemplateConfigService) GetRoutes() ([]model.RoutingRule, error) {
 	return routes, nil
 }
 
-func (s *XrayTemplateConfigService) GetRouteById(id int) (*model.RoutingRule, error) {
+func (s *XrayTemplateConfigService) GetRouteByID(id int) (*model.RoutingRule, error) {
 	routes, err := s.GetRoutes()
 	if err != nil {
 		return nil, err
@@ -340,7 +340,7 @@ func (s *XrayTemplateConfigService) DeleteRoute(id int) error {
 }
 
 func (s *XrayTemplateConfigService) ReorderRoutes(items []struct {
-	Id       int `json:"id"`
+	ID       int `json:"id"`
 	Priority int `json:"priority"`
 }) error {
 	routes, err := s.GetRoutes()
@@ -349,7 +349,7 @@ func (s *XrayTemplateConfigService) ReorderRoutes(items []struct {
 	}
 	priorityByID := make(map[int]int, len(items))
 	for _, item := range items {
-		priorityByID[item.Id] = item.Priority
+		priorityByID[item.ID] = item.Priority
 	}
 	for i := range routes {
 		if priority, ok := priorityByID[routes[i].Id]; ok {

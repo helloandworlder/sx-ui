@@ -206,7 +206,9 @@ func TestAPI_Routes_CRUD(t *testing.T) {
 	w := doRequest(router, "GET", "/api/v1/routes", nil)
 	resp := parseResp(t, w)
 	var before []model.RoutingRule
-	json.Unmarshal(resp.Obj, &before)
+	if err := json.Unmarshal(resp.Obj, &before); err != nil {
+		t.Fatalf("unmarshal routes before create: %v", err)
+	}
 
 	// Create
 	w = doRequest(router, "POST", "/api/v1/routes", map[string]any{
