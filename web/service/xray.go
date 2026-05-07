@@ -244,53 +244,9 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
 	}
 
-	// sx-ui: Override outbounds from DB if any exist, otherwise keep template outbounds.
-	dbOutbounds, _ := s.outboundCrudService.GetEnabled()
-	if len(dbOutbounds) > 0 {
-		// Merge: keep template outbounds that are not overridden by DB outbounds.
-		// Parse existing template outbounds to check for duplicates.
-		var templateOuts []map[string]any
-		if len(xrayConfig.OutboundConfigs) > 0 {
-			_ = json.Unmarshal(xrayConfig.OutboundConfigs, &templateOuts)
-		}
-
-		// Build map of DB outbound tags
-		dbTagSet := make(map[string]bool)
-		var allOuts []map[string]any
-		for _, dbo := range dbOutbounds {
-			dbTagSet[dbo.Tag] = true
-			outObj := map[string]any{
-				"tag":      dbo.Tag,
-				"protocol": dbo.Protocol,
-			}
-			if dbo.Settings != "" {
-				var settings any
-				if err := json.Unmarshal([]byte(dbo.Settings), &settings); err == nil {
-					outObj["settings"] = settings
-				}
-			}
-			if dbo.SendThrough != "" {
-				outObj["sendThrough"] = dbo.SendThrough
-			}
-			allOuts = append(allOuts, outObj)
-		}
-
-		// Add template outbounds not overridden by DB (e.g., "api", "direct", "blocked")
-		for _, tplOut := range templateOuts {
-			tag, _ := tplOut["tag"].(string)
-			if tag != "" && !dbTagSet[tag] {
-				allOuts = append(allOuts, tplOut)
-			}
-		}
-
-		outsJson, _ := json.Marshal(allOuts)
-		xrayConfig.OutboundConfigs = outsJson
-	}
-
-	// sx-ui: Override routing rules from DB if any exist.
-	dbRules, _ := s.routingCrudService.GetEnabled()
-	if len(dbRules) > 0 {
-		// Parse existing routing config to preserve domainStrategy, balancers, etc.
+	// Check for geoip:cn block (auto-injected rule for residential nodes)
+	geoipBlock, _ := s.nodeMetaService.Get("geoip_block_cn")
+	if geoipBlock == "true" {
 		var routingObj map[string]any
 		if len(xrayConfig.RouterConfig) > 0 {
 			_ = json.Unmarshal(xrayConfig.RouterConfig, &routingObj)
@@ -298,45 +254,13 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		if routingObj == nil {
 			routingObj = map[string]any{"domainStrategy": "AsIs"}
 		}
-
-		// Always keep the API inbound route rule
-		var allRules []any
-		if existingRules, ok := routingObj["rules"].([]any); ok {
-			for _, r := range existingRules {
-				rMap, ok := r.(map[string]any)
-				if ok {
-					// Keep the API route rule from the template
-					if inboundTag, ok := rMap["inboundTag"].([]any); ok {
-						for _, t := range inboundTag {
-							if t == "api" {
-								allRules = append(allRules, r)
-								break
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Add DB rules in priority order
-		for _, rule := range dbRules {
-			var ruleObj any
-			if err := json.Unmarshal([]byte(rule.RuleJson), &ruleObj); err == nil {
-				allRules = append(allRules, ruleObj)
-			}
-		}
-
-		// Check for geoip:cn block (auto-injected rule for residential nodes)
-		geoipBlock, _ := s.nodeMetaService.Get("geoip_block_cn")
-		if geoipBlock == "true" {
-			allRules = append(allRules, map[string]any{
-				"type":        "field",
-				"source":      []string{"geoip:cn"},
-				"outboundTag": "blocked",
-			})
-		}
-
-		routingObj["rules"] = allRules
+		rules, _ := routingObj["rules"].([]any)
+		rules = append(rules, map[string]any{
+			"type":        "field",
+			"source":      []string{"geoip:cn"},
+			"outboundTag": "blocked",
+		})
+		routingObj["rules"] = rules
 		routingJson, _ := json.Marshal(routingObj)
 		xrayConfig.RouterConfig = routingJson
 	}

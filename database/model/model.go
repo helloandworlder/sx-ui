@@ -162,7 +162,8 @@ type ClientRateLimit struct {
 
 // Outbound represents an Xray outbound configuration.
 // In stock 3x-ui outbounds live inside the xrayTemplateConfig JSON blob;
-// sx-ui promotes them to first-class DB rows so GoSea can CRUD them via API.
+// sx-ui keeps this table only as migration compatibility. Runtime/API state
+// is stored in settings.xrayTemplateConfig for 3x-ui compatibility.
 type Outbound struct {
 	Id          int    `json:"id" gorm:"primaryKey;autoIncrement"`
 	Tag         string `json:"tag" gorm:"uniqueIndex"`
@@ -174,7 +175,8 @@ type Outbound struct {
 }
 
 // RoutingRule represents a single Xray routing rule.
-// Like Outbound, these are promoted from the JSON template to individual rows.
+// Like Outbound, this table is retained for migration compatibility; runtime
+// routing rules live in settings.xrayTemplateConfig.
 type RoutingRule struct {
 	Id       int    `json:"id" gorm:"primaryKey;autoIncrement"`
 	Priority int    `json:"priority" gorm:"index"` // lower = matched first

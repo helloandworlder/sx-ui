@@ -1017,6 +1017,9 @@ func (s *ServerService) ImportDB(file multipart.File) error {
 	}
 
 	s.inboundService.MigrateDB()
+	if err := (&XrayTemplateConfigService{}).MigrateCrudRowsToTemplate(); err != nil {
+		logger.Warningf("Failed to migrate CRUD outbounds/routes into Xray template: %v", err)
+	}
 
 	// Start Xray
 	if err = s.RestartXrayService(); err != nil {

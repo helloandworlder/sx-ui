@@ -50,6 +50,9 @@ func runWebServer() {
 	if err != nil {
 		log.Fatalf("Error initializing database: %v", err)
 	}
+	if err := (&service.XrayTemplateConfigService{}).MigrateCrudRowsToTemplate(); err != nil {
+		logger.Warning("Failed to migrate CRUD outbounds/routes into Xray template:", err)
+	}
 
 	var server *web.Server
 	server = web.NewServer()
@@ -411,6 +414,9 @@ func migrateDb() {
 	}
 	fmt.Println("Start migrating database...")
 	inboundService.MigrateDB()
+	if err := (&service.XrayTemplateConfigService{}).MigrateCrudRowsToTemplate(); err != nil {
+		log.Printf("Failed to migrate CRUD outbounds/routes into Xray template: %v", err)
+	}
 	fmt.Println("Migration done!")
 }
 

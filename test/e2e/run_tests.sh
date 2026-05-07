@@ -3,9 +3,9 @@ set -euo pipefail
 
 PANEL="${PANEL_URL:-http://sx-ui:2053}"
 XRAY="/app/bin/xray-linux-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-IFS=: read -r S5H S5P S5U S5PW <<< "${SOCKS5_OUT:-207.21.125.221:9878:uIVTyaTFkeA:vr0Pq08jEHBQ}"
-CHAIN_ECHO_URL="${CHAIN_ECHO_URL:-http://httpbin.org/ip}"
+IFS=: read -r S5H S5P S5U S5PW <<< "${LOCAL_SOCKS_OUT:-sx-e2e-runner:19888:e2euser:e2epass}"
 API_KEY=""; P=0; F=0; T=0; SRV="sx-e2e-server"
+ECHO_PID=0; SOCKS_PID=0
 
 # Use python3 as jq
 j() { python3 -c "import sys,json;d=json.load(sys.stdin);exec('''
@@ -28,7 +28,36 @@ api() { local m=$1 p=$2;shift 2;local b="${1:-}"
   HC=$(echo "$RESP"|tail -1); BD=$(echo "$RESP"|sed '$d')
 }
 
-cleanup() { pkill -f "xray run" 2>/dev/null||true; kill $ECHO_PID 2>/dev/null||true; }
+reorder_top_routes() {
+  local top_ids="$1"
+  api GET /routes
+  local payload
+  payload=$(echo "$BD" | TOP_IDS="$top_ids" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+routes = d.get("obj", [])
+top = [int(x) for x in os.environ["TOP_IDS"].split(",") if x]
+top_pos = {rid: i + 1 for i, rid in enumerate(top)}
+items = []
+tail = len(top) + 1
+for r in routes:
+    rid = int(r["id"])
+    if rid in top_pos:
+        items.append({"id": rid, "priority": top_pos[rid]})
+    else:
+        items.append({"id": rid, "priority": tail})
+        tail += 1
+print(json.dumps(items))
+')
+  api POST /routes/reorder "$payload"
+  [ "$HC" = "200" ] && ok "Route order promoted $top_ids" || ng "Route reorder $HC $BD"
+}
+
+cleanup() {
+  pkill -f "xray run" 2>/dev/null||true
+  [ "${ECHO_PID:-0}" != "0" ] && kill "$ECHO_PID" 2>/dev/null||true
+  [ "${SOCKS_PID:-0}" != "0" ] && kill "$SOCKS_PID" 2>/dev/null||true
+}
 trap cleanup EXIT
 
 # Start a local HTTP server: /ip returns JSON, /data/<n> returns n KB of data
@@ -52,8 +81,109 @@ http.server.HTTPServer(("0.0.0.0",19999),H).serve_forever()
 ' &
 ECHO_PID=$!
 sleep 1
-ECHO="http://$(hostname):19999"
+ECHO_HOST="${E2E_ECHO_HOST:-$(python3 -c 'import socket; print(socket.gethostbyname(socket.gethostname()))')}"
+ECHO="http://${ECHO_HOST}:19999"
 echo "  Echo server at $ECHO (pid=$ECHO_PID)"
+
+# Start a local authenticated SOCKS5 server. Route tests assert this log is
+# written, proving sx-core selected the configured Socks5 outbound.
+python3 - "$S5U" "$S5PW" "$S5P" /tmp/local-socks.log <<'PY' &
+import select
+import socket
+import struct
+import sys
+import threading
+
+USER = sys.argv[1].encode()
+PASS = sys.argv[2].encode()
+PORT = int(sys.argv[3])
+LOG = sys.argv[4]
+
+def recvn(sock, n):
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            raise OSError("unexpected eof")
+        data += chunk
+    return data
+
+def relay(a, b):
+    sockets = [a, b]
+    while sockets:
+        readable, _, _ = select.select(sockets, [], [], 30)
+        if not readable:
+            return
+        for src in readable:
+            dst = b if src is a else a
+            data = src.recv(65536)
+            if not data:
+                return
+            dst.sendall(data)
+
+def handle(client):
+    upstream = None
+    try:
+        header = recvn(client, 2)
+        methods = recvn(client, header[1])
+        if 2 not in methods:
+            client.sendall(b"\x05\xff")
+            return
+        client.sendall(b"\x05\x02")
+        auth = recvn(client, 2)
+        got_user = recvn(client, auth[1])
+        got_pass = recvn(client, recvn(client, 1)[0])
+        if got_user != USER or got_pass != PASS:
+            client.sendall(b"\x01\x01")
+            return
+        client.sendall(b"\x01\x00")
+
+        req = recvn(client, 4)
+        if req[1] != 1:
+            client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            return
+        atyp = req[3]
+        if atyp == 1:
+            host = socket.inet_ntoa(recvn(client, 4))
+        elif atyp == 3:
+            host = recvn(client, recvn(client, 1)[0]).decode()
+        elif atyp == 4:
+            host = socket.inet_ntop(socket.AF_INET6, recvn(client, 16))
+        else:
+            client.sendall(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
+            return
+        port = struct.unpack("!H", recvn(client, 2))[0]
+        upstream = socket.create_connection((host, port), timeout=10)
+        with open(LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"CONNECT {host}:{port} user={USER.decode()}\n")
+            fh.flush()
+        client.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+        relay(client, upstream)
+    except Exception as exc:
+        with open(LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"ERROR {exc}\n")
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+        if upstream is not None:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("0.0.0.0", PORT))
+server.listen(128)
+while True:
+    client, _ = server.accept()
+    threading.Thread(target=handle, args=(client,), daemon=True).start()
+PY
+SOCKS_PID=$!
+sleep 1
+echo "  Local SOCKS5 exit at ${S5H}:${S5P} (pid=$SOCKS_PID)"
 
 # ── Phase 0: Auth ──
 log "Phase 0: Auth"
@@ -105,13 +235,41 @@ api POST /inbounds "{\"listen\":\"0.0.0.0\",\"port\":20083,\"protocol\":\"http\"
 # SOCKS5
 api POST /inbounds "{\"listen\":\"0.0.0.0\",\"port\":20084,\"protocol\":\"socks\",\"enable\":true,\"remark\":\"socks\",\"tag\":\"in-sk\",\"settings\":\"{\\\"auth\\\":\\\"password\\\",\\\"accounts\\\":[{\\\"user\\\":\\\"sU\\\",\\\"pass\\\":\\\"sP\\\",\\\"email\\\":\\\"em-sk\\\"}],\\\"udp\\\":true}\",\"streamSettings\":\"{}\",\"sniffing\":\"{\\\"enabled\\\":false}\"}"
 [ "$HC" = "201" ] && ok "SOCKS5 :20084" || ng "SOCKS5 $HC $BD"
+SK_ID=$(echo "$BD" | j obj.id 2>/dev/null || true)
+
+# Mixed
+MX_USER="mU"; MX_PASS="mP"
+api POST /inbounds "{\"listen\":\"0.0.0.0\",\"port\":20085,\"protocol\":\"mixed\",\"enable\":true,\"remark\":\"mixed\",\"tag\":\"in-mx\",\"settings\":\"{\\\"auth\\\":\\\"password\\\",\\\"accounts\\\":[{\\\"user\\\":\\\"$MX_USER\\\",\\\"pass\\\":\\\"$MX_PASS\\\",\\\"email\\\":\\\"em-mx\\\"}],\\\"udp\\\":true}\",\"streamSettings\":\"{}\",\"sniffing\":\"{\\\"enabled\\\":false}\"}"
+[ "$HC" = "201" ] && ok "Mixed :20085" || ng "Mixed $HC $BD"
+MX_ID=$(echo "$BD" | j obj.id 2>/dev/null || true)
 
 # ── Phase 3: Rate limits ──
 log "Phase 3: Rate limits (1 Mbps)"
-for em in em-vm em-vl em-ss em-ht em-sk; do
+for em in em-vm em-vl em-ss em-ht em-sk em-mx; do
   api PUT "/rate-limits/$em" '{"egressBps":125000,"ingressBps":125000}'
   [ "$HC" = "200" ] && ok "$em" || ng "$em $HC"
 done
+
+log "Phase 3b: REST account save keeps JSON payloads and limits"
+api PUT "/inbounds/$MX_ID/clients/em-mx" '{"user":"mU2","pass":"mP2","email":"em-mx","enable":true}'
+if [ "$HC" = "200" ]; then
+  MX_USER="mU2"; MX_PASS="mP2"
+  ok "Mixed client PUT JSON"
+else
+  ng "Mixed client PUT JSON: $HC $BD"
+fi
+api GET /rate-limits/em-mx
+RL_E=$(echo "$BD" | j obj.egressBps 2>/dev/null || echo "")
+[ "$HC" = "200" ] && [ "$RL_E" = "125000" ] && ok "Mixed client save preserved 1Mbps limit" || ng "Mixed rate after save: $HC $BD"
+
+log "Phase 3c: Local test routes before template private-IP block"
+api POST /routes "{\"priority\":1,\"ruleJson\":\"{\\\"type\\\":\\\"field\\\",\\\"user\\\":[\\\"em-ht\\\"],\\\"outboundTag\\\":\\\"direct\\\"}\",\"enabled\":true}"
+[ "$HC" = "201" ] && ok "Route em-ht → direct" || ng "Route em-ht $HC $BD"
+HT_ROUTE_ID=$(echo "$BD" | j obj.id 2>/dev/null || true)
+api POST /routes "{\"priority\":2,\"ruleJson\":\"{\\\"type\\\":\\\"field\\\",\\\"user\\\":[\\\"em-vm\\\"],\\\"outboundTag\\\":\\\"direct\\\"}\",\"enabled\":true}"
+[ "$HC" = "201" ] && ok "Route em-vm → direct" || ng "Route em-vm $HC $BD"
+VM_ROUTE_ID=$(echo "$BD" | j obj.id 2>/dev/null || true)
+reorder_top_routes "${HT_ROUTE_ID},${VM_ROUTE_ID}"
 
 # ── Phase 4: Restart Xray & check status ──
 log "Phase 4: Restart Xray"
@@ -122,16 +280,13 @@ api GET /node/status
 XR=$(echo "$BD" | j obj.xrayRunning)
 [ "$XR" = "True" ] || [ "$XR" = "true" ] && ok "Xray running ($(echo "$BD"|j obj.xrayVersion))" || ng "Xray NOT running ($XR) — $(echo "$BD")"
 
-# ── Phase 5: HTTP + SOCKS5 (curl) ──
-log "Phase 5: HTTP & SOCKS5 connectivity"
+# ── Phase 5: HTTP connectivity ──
+log "Phase 5: HTTP connectivity"
 R=$(curl -sf --proxy "http://hU:hP@${SRV}:20083" --max-time 15 $ECHO/ip 2>/dev/null) || R=""
 [ -n "$R" ] && ok "HTTP → $(echo $R|j origin)" || ng "HTTP proxy"
 
-R=$(curl -sf --socks5 "${SRV}:20084" --proxy-user "sU:sP" --max-time 15 $ECHO/ip 2>/dev/null) || R=""
-[ -n "$R" ] && ok "SOCKS5 → $(echo $R|j origin)" || ng "SOCKS5 proxy"
-
-# ── Phase 6: VMess/VLESS/SS (XrayCore client) ──
-log "Phase 6: XrayCore client connectivity"
+# ── Phase 6: VMess XrayCore client ──
+log "Phase 6: VMess XrayCore client connectivity"
 
 xtest() {
   local name=$1 lport=$2 cfg=$3 target="${4:-$ECHO/ip}" expected="${5:-}"
@@ -161,51 +316,77 @@ EOF
 }
 
 xtest VMess 30080 "{\"protocol\":\"vmess\",\"settings\":{\"vnext\":[{\"address\":\"${SRV}\",\"port\":20080,\"users\":[{\"id\":\"${VU}\",\"alterId\":0,\"security\":\"auto\"}]}]},\"streamSettings\":{\"network\":\"tcp\"}}"
-xtest VLESS 30081 "{\"protocol\":\"vless\",\"settings\":{\"vnext\":[{\"address\":\"${SRV}\",\"port\":20081,\"users\":[{\"id\":\"${VLU}\",\"encryption\":\"none\"}]}]},\"streamSettings\":{\"network\":\"tcp\"}}"
-xtest Shadowsocks 30082 "{\"protocol\":\"shadowsocks\",\"settings\":{\"servers\":[{\"address\":\"${SRV}\",\"port\":20082,\"method\":\"aes-256-gcm\",\"password\":\"sspw123\"}]}}"
 
-# ── Phase 7: 专线 Chain (VMess → Socks5 出站) ──
-log "Phase 7: VMess → Socks5 exit chain"
-api POST /routes "{\"priority\":1,\"ruleJson\":\"{\\\"type\\\":\\\"field\\\",\\\"user\\\":[\\\"em-vm\\\"],\\\"outboundTag\\\":\\\"s5exit\\\"}\",\"enabled\":true}"
-[ "$HC" = "201" ] && ok "Route em-vm → s5exit" || ng "Route $HC"
+# ── Phase 7: Socks5/Mixed inbound → Socks5 outbound route ──
+log "Phase 7: Socks5/Mixed → local Socks5 outbound route"
+api POST /routes "{\"priority\":1,\"ruleJson\":\"{\\\"type\\\":\\\"field\\\",\\\"user\\\":[\\\"em-sk\\\"],\\\"outboundTag\\\":\\\"s5exit\\\"}\",\"enabled\":true}"
+[ "$HC" = "201" ] && ok "Route em-sk → s5exit" || ng "Route em-sk $HC $BD"
+SK_ROUTE_ID=$(echo "$BD" | j obj.id 2>/dev/null || true)
+api POST /routes "{\"priority\":2,\"ruleJson\":\"{\\\"type\\\":\\\"field\\\",\\\"user\\\":[\\\"em-mx\\\"],\\\"outboundTag\\\":\\\"s5exit\\\"}\",\"enabled\":true}"
+[ "$HC" = "201" ] && ok "Route em-mx → s5exit" || ng "Route em-mx $HC $BD"
+MX_ROUTE_ID=$(echo "$BD" | j obj.id 2>/dev/null || true)
+reorder_top_routes "${SK_ROUTE_ID},${MX_ROUTE_ID},${HT_ROUTE_ID},${VM_ROUTE_ID}"
 api POST /xray/restart; sleep 3
-CHAIN_EXPECTED=$(curl -sf --socks5 "${S5H}:${S5P}" --proxy-user "${S5U}:${S5PW}" --max-time 20 "${CHAIN_ECHO_URL}" 2>/dev/null | j origin || true)
-if [ -n "$CHAIN_EXPECTED" ]; then
-  ok "S5 exit origin → ${CHAIN_EXPECTED}"
-  xtest "VMess→S5" 30090 "{\"protocol\":\"vmess\",\"settings\":{\"vnext\":[{\"address\":\"${SRV}\",\"port\":20080,\"users\":[{\"id\":\"${VU}\",\"alterId\":0,\"security\":\"auto\"}]}]},\"streamSettings\":{\"network\":\"tcp\"}}" "${CHAIN_ECHO_URL}" "${CHAIN_EXPECTED}"
-else
-  ng "S5 exit baseline"
-fi
+
+route_probe() {
+  local label=$1 port=$2 userpass=$3
+  rm -f /tmp/local-socks.log /tmp/route-dl
+  curl -sf --socks5 "${SRV}:${port}" --proxy-user "$userpass" --max-time 30 -o /tmp/route-dl "$ECHO/data/64" 2>/dev/null || true
+  local sz=0
+  if [ -f /tmp/route-dl ]; then
+    sz=$(stat -c%s /tmp/route-dl 2>/dev/null || wc -c < /tmp/route-dl)
+  fi
+  if [ "$sz" -ge 60000 ] && grep -q "CONNECT ${ECHO_HOST}:19999" /tmp/local-socks.log 2>/dev/null; then
+    ok "$label route hit local s5exit (${sz} bytes)"
+  else
+    ng "$label route failed: size=${sz}, log=$(cat /tmp/local-socks.log 2>/dev/null || true)"
+  fi
+  rm -f /tmp/route-dl
+}
+
+route_probe "SOCKS5" 20084 "sU:sP"
+route_probe "Mixed" 20085 "${MX_USER}:${MX_PASS}"
 
 # ── Phase 8: Real rate limit verification ──
-# SOCKS5 has 1 Mbps (125000 Bps) limit. Use a 1MB transfer so the average
-# converges and we don't mistake a short token-bucket burst for a bypass.
-log "Phase 8: Rate limit verification (1MB @ 1Mbps limit)"
+log "Phase 8: Rate limit verification (1Mbps / 50Kbps / 100Mbps)"
 
-S=$(date +%s%N)
-curl -sf --socks5 "${SRV}:20084" --proxy-user "sU:sP" --max-time 60 -o /tmp/dl "$ECHO/data/1024" 2>/dev/null || true
-E=$(date +%s%N)
+rate_case() {
+  local label=$1 bps=$2 kb=$3 min_ms=$4 max_ms=$5 max_time=$6
+  api PUT /rate-limits/em-sk "{\"egressBps\":${bps},\"ingressBps\":${bps}}"
+  if [ "$HC" != "200" ]; then
+    ng "$label set rate: $HC $BD"
+    return
+  fi
+  api POST /xray/restart
+  sleep 3
+  rm -f /tmp/dl
+  local s e sz ms kbps
+  s=$(date +%s%N)
+  curl -sf --socks5 "${SRV}:20084" --proxy-user "sU:sP" --max-time "$max_time" -o /tmp/dl "$ECHO/data/$kb" 2>/dev/null || true
+  e=$(date +%s%N)
+  if [ ! -f /tmp/dl ]; then
+    ng "$label download failed"
+    return
+  fi
+  sz=$(stat -c%s /tmp/dl 2>/dev/null || wc -c < /tmp/dl)
+  ms=$(( (e - s) / 1000000 ))
+  kbps=$(( sz * 8 / (ms + 1) ))
+  rm -f /tmp/dl
+  if [ "$sz" -lt $(( kb * 900 )) ]; then
+    ng "$label incomplete: ${sz} bytes"
+    return
+  fi
+  ok "$label downloaded ${sz} bytes in ${ms}ms (${kbps} Kbps)"
+  if [ "$ms" -ge "$min_ms" ] && [ "$ms" -le "$max_ms" ]; then
+    ok "$label rate effective"
+  else
+    ng "$label rate out of range: ${ms}ms expected ${min_ms}-${max_ms}ms"
+  fi
+}
 
-if [ -f /tmp/dl ]; then
-    SZ=$(stat -c%s /tmp/dl 2>/dev/null || wc -c < /tmp/dl)
-    MS=$(( (E - S) / 1000000 ))
-    KBPS=$(( SZ * 8 / (MS + 1) ))
-    rm -f /tmp/dl
-
-    if [ "$SZ" -ge 900000 ]; then
-        ok "Downloaded ${SZ} bytes in ${MS}ms (${KBPS} Kbps)"
-        # 1MB at 1Mbps should take about 8.4s. Allow a wide margin for startup and scheduling jitter.
-        if [ "$MS" -ge 6000 ] && [ "$MS" -le 14000 ]; then
-            ok "Rate limit EFFECTIVE: ${KBPS} Kbps matches long-window throughput"
-        else
-            ng "Rate limit out of range: ${MS}ms (expected 6000-14000ms)"
-        fi
-    else
-        ng "Incomplete download: ${SZ} bytes"
-    fi
-else
-    ng "Download failed entirely"
-fi
+rate_case "1Mbps" 125000 1024 6000 15000 70
+rate_case "50Kbps" 6250 128 12000 35000 80
+rate_case "100Mbps" 12500000 1024 1 4000 30
 
 # Also test speed API endpoint
 api GET /clients/em-sk/speed

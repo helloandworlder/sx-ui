@@ -18,17 +18,23 @@ RUN go build -ldflags "-w -s" -o /out/x-ui main.go
 WORKDIR /workspace/sx-core
 RUN ARCH=$(go env GOARCH) && \
     go build -ldflags "-w -s" -o /out/bin/xray-linux-${ARCH} ./main
+RUN GEO_SRC=/workspace/sx-ui/build/bin; \
+    if [ ! -f "$GEO_SRC/geoip.dat" ] || [ ! -f "$GEO_SRC/geosite.dat" ]; then \
+      GEO_SRC=/workspace/sx-ui/dist/sx-ui/bin; \
+    fi; \
+    cp "$GEO_SRC/geoip.dat" /out/bin/geoip.dat; \
+    cp "$GEO_SRC/geosite.dat" /out/bin/geosite.dat
 
 # ── Runtime ─────────────────────────────────────────────────
 FROM alpine:3.20
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates tzdata bash curl
+RUN apk add --no-cache ca-certificates tzdata bash curl python3
 
 COPY --from=builder /out/ /app/
 RUN chmod +x /app/x-ui /app/bin/*
 RUN mkdir -p /etc/x-ui /var/log/x-ui
 
-EXPOSE 2053 20080 20081 20082 20083 20084
+EXPOSE 2053 20080 20081 20082 20083 20084 20085
 ENV XUI_MAIN_FOLDER=/app
-CMD ["/app/x-ui"]
+CMD ["/bin/bash", "-lc", "/app/x-ui setting -port 2053 -listenIP 0.0.0.0 -xrayApiPort 62789 -xrayMetricsPort 62790 && exec /app/x-ui run"]

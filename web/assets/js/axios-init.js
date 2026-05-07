@@ -5,6 +5,11 @@ axios.interceptors.request.use(
     (config) => {
         if (config.data instanceof FormData) {
             config.headers['Content-Type'] = 'multipart/form-data';
+        } else if (typeof config.url === 'string' && config.url.startsWith('/api/v1/')) {
+            config.headers['Content-Type'] = 'application/json; charset=UTF-8';
+            if (config.data !== undefined && typeof config.data !== 'string') {
+                config.data = JSON.stringify(config.data);
+            }
         } else {
             config.data = Qs.stringify(config.data, {
                 arrayFormat: 'repeat',

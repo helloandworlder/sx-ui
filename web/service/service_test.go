@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/helloandworlder/sx-ui/v2/database"
@@ -296,6 +297,144 @@ func TestXrayService_GetXrayConfigFiltersDisabledAccountProtocols(t *testing.T) 
 	if _, ok := settings.Accounts[0]["totalGB"]; ok {
 		t.Fatalf("runtime account should not include panel-only entitlement fields: %#v", settings.Accounts[0])
 	}
+}
+
+func TestXrayService_GetXrayConfigKeepsTemplateRoutingWhenCrudRowsExist(t *testing.T) {
+	dbPath := setupTestDB(t)
+	defer teardownTestDB(dbPath)
+
+	template := `{
+		"log": {},
+		"api": {"tag":"api","services":["HandlerService"]},
+		"inbounds": [],
+		"outbounds": [
+			{"tag":"direct","protocol":"freedom","settings":{}},
+			{"tag":"blocked","protocol":"blackhole","settings":{}},
+			{"tag":"EbAUeRHJ","protocol":"socks","settings":{"servers":[{"address":"g5ip.com","port":5388,"users":[{"user":"EbAUeRHJ","pass":"EbAUeRHJ"}]}]}},
+			{"tag":"cli-us-video-0501-out-0001","protocol":"socks","settings":{"servers":[{"address":"204.42.251.157","port":9878,"users":[{"user":"u","pass":"p"}]}]}}
+		],
+		"routing": {
+			"domainStrategy": "AsIs",
+			"rules": [
+				{"inboundTag":["api"],"outboundTag":"api","type":"field"},
+				{"type":"field","user":["g8428hqt"],"outboundTag":"EbAUeRHJ"},
+				{"type":"field","user":["美国短视频1-5/1"],"outboundTag":"cli-us-video-0501-out-0001"}
+			]
+		}
+	}`
+	settingService := SettingService{}
+	if err := settingService.saveSetting("xrayTemplateConfig", template); err != nil {
+		t.Fatal(err)
+	}
+
+	db := database.GetDB()
+	if err := db.Create(&model.Outbound{
+		Tag:      "cli-us-video-0501-out-0001",
+		Protocol: "socks",
+		Settings: `{"servers":[{"address":"204.42.251.157","port":9878,"users":[{"user":"u","pass":"p"}]}]}`,
+		Enabled:  true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.RoutingRule{
+		Priority: 1001,
+		RuleJson: `{"type":"field","user":["美国短视频1-5/1"],"outboundTag":"cli-us-video-0501-out-0001"}`,
+		Enabled:  true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	xrayService := XrayService{}
+	cfg, err := xrayService.GetXrayConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg.RouterConfig), "g8428hqt") || !strings.Contains(string(cfg.RouterConfig), "EbAUeRHJ") {
+		t.Fatalf("template user route must remain in runtime config: %s", string(cfg.RouterConfig))
+	}
+	if !strings.Contains(string(cfg.OutboundConfigs), "EbAUeRHJ") {
+		t.Fatalf("template outbound must remain in runtime config: %s", string(cfg.OutboundConfigs))
+	}
+}
+
+func TestXrayTemplateConfigService_MigratesCrudRowsIntoTemplateOnce(t *testing.T) {
+	dbPath := setupTestDB(t)
+	defer teardownTestDB(dbPath)
+
+	settingService := SettingService{}
+	if err := settingService.saveSetting("xrayTemplateConfig", `{
+		"log": {},
+		"inbounds": [],
+		"outbounds": [{"tag":"direct","protocol":"freedom","settings":{}}],
+		"routing": {"domainStrategy":"AsIs","rules":[{"inboundTag":["api"],"outboundTag":"api","type":"field"}]}
+	}`); err != nil {
+		t.Fatal(err)
+	}
+
+	db := database.GetDB()
+	if err := db.Create(&model.Outbound{
+		Tag:      "legacy-out",
+		Protocol: "socks",
+		Settings: `{"servers":[{"address":"127.0.0.1","port":1080}]}`,
+		Enabled:  true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.RoutingRule{
+		Priority: 10,
+		RuleJson: `{"type":"field","user":["legacy-user"],"outboundTag":"legacy-out"}`,
+		Enabled:  true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	templateService := XrayTemplateConfigService{}
+	if err := templateService.MigrateCrudRowsToTemplate(); err != nil {
+		t.Fatal(err)
+	}
+	outbounds, err := templateService.GetOutbounds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !serviceOutboundsContainTag(outbounds, "legacy-out") {
+		t.Fatalf("expected legacy outbound imported, got %#v", outbounds)
+	}
+	routes, err := templateService.GetRoutes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !serviceRoutesContain(routes, "legacy-user") {
+		t.Fatalf("expected legacy route imported, got %#v", routes)
+	}
+
+	if err := templateService.MigrateCrudRowsToTemplate(); err != nil {
+		t.Fatal(err)
+	}
+	routesAgain, err := templateService.GetRoutes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routesAgain) != len(routes) {
+		t.Fatalf("migration should be idempotent, before=%d after=%d", len(routes), len(routesAgain))
+	}
+}
+
+func serviceOutboundsContainTag(outbounds []model.Outbound, tag string) bool {
+	for _, outbound := range outbounds {
+		if outbound.Tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceRoutesContain(routes []model.RoutingRule, text string) bool {
+	for _, route := range routes {
+		if strings.Contains(route.RuleJson, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── NodeMetaService Tests ──────────────────────────────────────────────

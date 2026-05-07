@@ -10,7 +10,7 @@ import (
 )
 
 // ConfigSeqService manages the monotonically increasing configuration
-// sequence number.  Every mutation to Inbound / Outbound / RoutingRule
+// sequence number. Every mutation to Inbound / Xray template / RateLimit
 // must call BumpSeq() so GoSea can detect changes.
 type ConfigSeqService struct{}
 
@@ -100,11 +100,9 @@ func (s *ConfigSeqService) UpdateHash() error {
 	var inbounds []model.Inbound
 	db.Order("id").Find(&inbounds)
 
-	var outbounds []model.Outbound
-	db.Order("id").Find(&outbounds)
-
-	var routes []model.RoutingRule
-	db.Order("priority, id").Find(&routes)
+	templateService := XrayTemplateConfigService{}
+	outbounds, _ := templateService.GetOutbounds()
+	routes, _ := templateService.GetRoutes()
 
 	var rateLimits []model.ClientRateLimit
 	db.Order("email").Find(&rateLimits)

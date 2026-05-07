@@ -26,7 +26,8 @@ services:
     environment:
       PANEL_URL: http://sx-ui:2053
       XRAY_BIN: /app/bin/xray-linux-amd64
-      SOCKS5_OUT: "207.21.125.221:9878:uIVTyaTFkeA:vr0Pq08jEHBQ"
+      E2E_RUNNER_HOST: test-runner
+      LOCAL_SOCKS_OUT: "test-runner:19888:e2euser:e2epass"
     networks: [e2e]
 
 networks:

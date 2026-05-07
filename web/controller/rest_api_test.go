@@ -76,6 +76,15 @@ func doFormRequest(router *gin.Engine, method, path string, form url.Values) *ht
 	return w
 }
 
+func outboundsContainTag(outbounds []model.Outbound, tag string) bool {
+	for _, outbound := range outbounds {
+		if outbound.Tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
 type apiResp struct {
 	Success bool            `json:"success"`
 	Msg     string          `json:"msg"`
@@ -146,7 +155,7 @@ func TestAPI_Outbound_CRUD(t *testing.T) {
 
 	// Create
 	w := doRequest(router, "POST", "/api/v1/outbounds", map[string]any{
-		"tag": "direct", "protocol": "freedom", "settings": "{}", "enabled": true,
+		"tag": "rest-direct", "protocol": "freedom", "settings": "{}", "enabled": true,
 	})
 	if w.Code != 201 {
 		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
@@ -154,8 +163,8 @@ func TestAPI_Outbound_CRUD(t *testing.T) {
 	resp := parseResp(t, w)
 	var created model.Outbound
 	json.Unmarshal(resp.Obj, &created)
-	if created.Tag != "direct" {
-		t.Errorf("expected tag 'direct', got %q", created.Tag)
+	if created.Tag != "rest-direct" {
+		t.Errorf("expected tag 'rest-direct', got %q", created.Tag)
 	}
 
 	// List
@@ -163,13 +172,13 @@ func TestAPI_Outbound_CRUD(t *testing.T) {
 	resp = parseResp(t, w)
 	var outbounds []model.Outbound
 	json.Unmarshal(resp.Obj, &outbounds)
-	if len(outbounds) != 1 {
-		t.Errorf("expected 1 outbound, got %d", len(outbounds))
+	if !outboundsContainTag(outbounds, "rest-direct") {
+		t.Errorf("expected rest-direct outbound, got %#v", outbounds)
 	}
 
 	// Update
 	w = doRequest(router, "PUT", "/api/v1/outbounds/"+itoa(created.Id), map[string]any{
-		"tag": "direct", "protocol": "freedom", "settings": `{"domainStrategy":"UseIP"}`, "enabled": true,
+		"tag": "rest-direct", "protocol": "freedom", "settings": `{"domainStrategy":"UseIP"}`, "enabled": true,
 	})
 	if w.Code != 200 {
 		t.Fatalf("update: expected 200, got %d", w.Code)
@@ -185,8 +194,8 @@ func TestAPI_Outbound_CRUD(t *testing.T) {
 	w = doRequest(router, "GET", "/api/v1/outbounds", nil)
 	resp = parseResp(t, w)
 	json.Unmarshal(resp.Obj, &outbounds)
-	if len(outbounds) != 0 {
-		t.Errorf("expected 0 outbounds after delete, got %d", len(outbounds))
+	if outboundsContainTag(outbounds, "rest-direct") {
+		t.Errorf("expected rest-direct to be deleted, got %#v", outbounds)
 	}
 }
 
@@ -194,8 +203,13 @@ func TestAPI_Routes_CRUD(t *testing.T) {
 	router, dbPath := setupTestRouter(t)
 	defer teardownRouter(dbPath)
 
+	w := doRequest(router, "GET", "/api/v1/routes", nil)
+	resp := parseResp(t, w)
+	var before []model.RoutingRule
+	json.Unmarshal(resp.Obj, &before)
+
 	// Create
-	w := doRequest(router, "POST", "/api/v1/routes", map[string]any{
+	w = doRequest(router, "POST", "/api/v1/routes", map[string]any{
 		"priority": 10,
 		"ruleJson": `{"type":"field","outboundTag":"blocked","ip":["geoip:private"]}`,
 		"enabled":  true,
@@ -206,11 +220,11 @@ func TestAPI_Routes_CRUD(t *testing.T) {
 
 	// List
 	w = doRequest(router, "GET", "/api/v1/routes", nil)
-	resp := parseResp(t, w)
+	resp = parseResp(t, w)
 	var routes []model.RoutingRule
 	json.Unmarshal(resp.Obj, &routes)
-	if len(routes) != 1 {
-		t.Errorf("expected 1 route, got %d", len(routes))
+	if len(routes) != len(before)+1 {
+		t.Errorf("expected one appended route, before=%d after=%d", len(before), len(routes))
 	}
 }
 
@@ -511,6 +525,125 @@ func TestAPI_MixedAccountUpdateAcceptsLegacyClientsSettings(t *testing.T) {
 	}
 }
 
+func TestAPI_MixedAccountUpdatePreservesRateLimitWhenOmitted(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20090,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","accounts":[{"user":"u","pass":"p","email":"line@example.com","enable":true,"comment":"line","egressBps":125000,"ingressBps":125000,"subId":"old-sub"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed-preserve-limit",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	rateLimitService := &service.RateLimitService{}
+	if _, err := rateLimitService.Set("line@example.com", 125000, 125000); err != nil {
+		t.Fatal(err)
+	}
+
+	w := doRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/line@example.com", map[string]any{
+		"user":   "u2",
+		"pass":   "p2",
+		"email":  "line@example.com",
+		"enable": true,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Accounts) != 1 {
+		t.Fatalf("expected one account, got %d", len(settings.Accounts))
+	}
+	account := settings.Accounts[0]
+	if account["egressBps"].(float64) != 125000 || account["ingressBps"].(float64) != 125000 {
+		t.Fatalf("expected omitted rate limits to be preserved, got %#v", account)
+	}
+
+	rl, err := rateLimitService.Get("line@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rl == nil || rl.EgressBps != 125000 || rl.IngressBps != 125000 {
+		t.Fatalf("expected persisted rate limit to remain, got %#v", rl)
+	}
+}
+
+func TestAPI_MixedAccountUpdatePreservesRateLimitTableWhenSettingsOmitLimit(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	db := database.GetDB()
+	inbound := &model.Inbound{
+		Remark:         "Mixed",
+		Enable:         true,
+		Listen:         "0.0.0.0",
+		Port:           20091,
+		Protocol:       model.Mixed,
+		Settings:       `{"auth":"password","accounts":[{"user":"u","pass":"p","email":"line@example.com","enable":true,"comment":"line","subId":"old-sub"}]}`,
+		StreamSettings: `{}`,
+		Tag:            "in-mixed-preserve-limit-table",
+		Sniffing:       `{"enabled":false}`,
+	}
+	if err := db.Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	rateLimitService := &service.RateLimitService{}
+	if _, err := rateLimitService.Set("line@example.com", 125000, 125000); err != nil {
+		t.Fatal(err)
+	}
+
+	w := doRequest(router, "PUT", "/api/v1/inbounds/"+itoa(inbound.Id)+"/clients/line@example.com", map[string]any{
+		"user":   "u2",
+		"pass":   "p2",
+		"email":  "line@example.com",
+		"enable": true,
+	})
+	if w.Code != 200 {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	rl, err := rateLimitService.Get("line@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rl == nil || rl.EgressBps != 125000 || rl.IngressBps != 125000 {
+		t.Fatalf("expected persisted rate limit to remain, got %#v", rl)
+	}
+
+	var updated model.Inbound
+	if err := db.First(&updated, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(updated.Settings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	account := settings.Accounts[0]
+	if account["egressBps"].(float64) != 125000 || account["ingressBps"].(float64) != 125000 {
+		t.Fatalf("expected table-backed limits to be written back, got %#v", account)
+	}
+}
+
 func TestAPI_MixedAccountListAndDeleteAcceptLegacyClientsSettings(t *testing.T) {
 	router, dbPath := setupTestRouter(t)
 	defer teardownRouter(dbPath)
@@ -659,10 +792,10 @@ func TestAPI_SyncState(t *testing.T) {
 
 	// Create some data first
 	doRequest(router, "POST", "/api/v1/outbounds", map[string]any{
-		"tag": "direct", "protocol": "freedom", "settings": "{}", "enabled": true,
+		"tag": "sync-direct", "protocol": "freedom", "settings": "{}", "enabled": true,
 	})
 	doRequest(router, "POST", "/api/v1/routes", map[string]any{
-		"priority": 10, "ruleJson": `{"type":"field","outboundTag":"blocked"}`, "enabled": true,
+		"priority": 10, "ruleJson": `{"type":"field","user":["sync-user"],"outboundTag":"sync-direct"}`, "enabled": true,
 	})
 	doRequest(router, "PUT", "/api/v1/rate-limits/user@test", map[string]any{
 		"egressBps": 1000, "ingressBps": 2000,
@@ -686,14 +819,103 @@ func TestAPI_SyncState(t *testing.T) {
 	if state.ConfigSeq < 2 { // outbound create + route create = at least 2 bumps
 		t.Errorf("expected configSeq >= 2, got %d", state.ConfigSeq)
 	}
-	if len(state.Outbounds) != 1 {
-		t.Errorf("expected 1 outbound in state, got %d", len(state.Outbounds))
+	if !outboundsContainTag(state.Outbounds, "sync-direct") {
+		t.Errorf("expected sync-direct outbound in state, got %#v", state.Outbounds)
 	}
-	if len(state.Routes) != 1 {
-		t.Errorf("expected 1 route in state, got %d", len(state.Routes))
+	foundRoute := false
+	for _, route := range state.Routes {
+		if strings.Contains(route.RuleJson, "sync-user") {
+			foundRoute = true
+			break
+		}
+	}
+	if !foundRoute {
+		t.Errorf("expected sync-user route in state, got %#v", state.Routes)
 	}
 	if len(state.RateLimits) != 1 {
 		t.Errorf("expected 1 rate limit in state, got %d", len(state.RateLimits))
+	}
+}
+
+func TestAPI_CreateRouteRejectsInvalidRuleJsonWithoutPersisting(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	w := doRequest(router, "GET", "/api/v1/routes", nil)
+	if w.Code != 200 {
+		t.Fatalf("initial list routes: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := parseResp(t, w)
+	var before []model.RoutingRule
+	if err := json.Unmarshal(resp.Obj, &before); err != nil {
+		t.Fatal(err)
+	}
+
+	w = doRequest(router, "POST", "/api/v1/routes", map[string]any{
+		"priority": 100,
+		"ruleJson": "user:[\"g8428hqt\"]",
+		"enabled":  true,
+	})
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for invalid ruleJson, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(router, "GET", "/api/v1/routes", nil)
+	if w.Code != 200 {
+		t.Fatalf("list routes: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp = parseResp(t, w)
+	var routes []model.RoutingRule
+	if err := json.Unmarshal(resp.Obj, &routes); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != len(before) {
+		t.Fatalf("invalid routeJson should not append, before=%d after=%d routes=%#v", len(before), len(routes), routes)
+	}
+}
+
+func TestAPI_FullSyncRejectsInvalidRouteJsonWithoutDeletingExistingRoutes(t *testing.T) {
+	router, dbPath := setupTestRouter(t)
+	defer teardownRouter(dbPath)
+
+	w := doRequest(router, "POST", "/api/v1/routes", map[string]any{
+		"priority": 10,
+		"ruleJson": `{"type":"field","user":["g8428hqt"],"outboundTag":"EbAUeRHJ"}`,
+		"enabled":  true,
+	})
+	if w.Code != 201 {
+		t.Fatalf("seed route: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(router, "POST", "/api/v1/sync/full", map[string]any{
+		"routes": []map[string]any{{
+			"priority": 100,
+			"ruleJson": "user:[\"g8428hqt\"]",
+			"enabled":  true,
+		}},
+	})
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for invalid fullSync routeJson, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(router, "GET", "/api/v1/routes", nil)
+	if w.Code != 200 {
+		t.Fatalf("list routes: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := parseResp(t, w)
+	var routes []model.RoutingRule
+	if err := json.Unmarshal(resp.Obj, &routes); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, route := range routes {
+		if strings.Contains(route.RuleJson, "EbAUeRHJ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("existing route should remain after rejected fullSync, got %#v", routes)
 	}
 }
 
