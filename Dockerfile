@@ -31,7 +31,7 @@ RUN go build -ldflags "-w -s" -o build/x-ui main.go
 RUN ./DockerInit.sh "$TARGETARCH"
 
 # ========================================================
-# Stage: Final Image of 3x-ui
+# Stage: Final Image of OpenUI
 # ========================================================
 FROM alpine
 ENV TZ=Asia/Tehran
@@ -47,7 +47,7 @@ RUN apk add --no-cache --update \
 
 COPY --from=builder /app/build/ /app/
 COPY --from=builder /app/DockerEntrypoint.sh /app/
-COPY --from=builder /app/x-ui.sh /usr/bin/x-ui
+COPY --from=builder /app/x-ui.sh /usr/bin/open-ui
 COPY --from=builder /app/web/translation /app/web/translation
 
 
@@ -58,13 +58,17 @@ RUN rm -f /etc/fail2ban/jail.d/alpine-ssh.conf \
   && sed -i "s/^\[sshd\]$/&\nenabled = false/" /etc/fail2ban/jail.local \
   && sed -i "s/#allowipv6 = auto/allowipv6 = auto/g" /etc/fail2ban/fail2ban.conf
 
-RUN chmod +x \
+RUN mv /app/x-ui /app/open-ui \
+  && chmod +x \
   /app/DockerEntrypoint.sh \
-  /app/x-ui \
-  /usr/bin/x-ui
+  /app/open-ui \
+  /usr/bin/open-ui
 
-ENV XUI_ENABLE_FAIL2BAN="true"
+ENV OPENUI_ENABLE_FAIL2BAN="true"
+ENV OPENUI_DB_FOLDER="/etc/open-ui"
+ENV OPENUI_LOG_FOLDER="/var/log/open-ui"
+ENV OPENUI_BIN_FOLDER="/app/bin"
 EXPOSE 2053
-VOLUME [ "/etc/x-ui" ]
-CMD [ "./x-ui" ]
+VOLUME [ "/etc/open-ui" ]
+CMD [ "./open-ui" ]
 ENTRYPOINT [ "/app/DockerEntrypoint.sh" ]

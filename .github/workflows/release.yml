@@ -1,41 +1,20 @@
-name: Release 3X-UI
+name: Release OpenUI
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "**"
     tags:
       - "v*.*.*"
-    paths:
-      - "**.js"
-      - "**.css"
-      - "**.html"
-      - "**.sh"
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "x-ui.service.debian"
-      - "x-ui.service.arch"
-      - "x-ui.service.rhel"
-  pull_request:
-    paths:
-      - "**.js"
-      - "**.css"
-      - "**.html"
-      - "**.sh"
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "x-ui.service.debian"
-      - "x-ui.service.arch"
-      - "x-ui.service.rhel"
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    permissions:
-      contents: write
+  build-linux:
+    name: Linux ${{ matrix.platform }}
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - amd64
@@ -45,7 +24,6 @@ jobs:
           - 386
           - armv5
           - s390x
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -56,15 +34,11 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # Frontend dist must be built BEFORE go build — Go's //go:embed
-      # all:dist directive in web/web.go requires web/dist/ to exist
-      # at compile time. web/dist/ is .gitignored, so on a fresh CI
-      # checkout it doesn't exist until vite emits it.
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
-          cache: 'npm'
+          node-version: "22"
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend bundle
@@ -73,12 +47,14 @@ jobs:
           npm run build
         working-directory: frontend
 
-      - name: Build 3X-UI
+      - name: Build OpenUI
+        shell: bash
         run: |
+          set -euo pipefail
           export CGO_ENABLED=1
           export GOOS=linux
           export GOARCH=${{ matrix.platform }}
-          # Use Bootlin prebuilt cross-toolchains (musl 1.2.5 in stable series)
+
           case "${{ matrix.platform }}" in
             amd64) BOOTLIN_ARCH="x86-64" ;;
             arm64) BOOTLIN_ARCH="aarch64" ;;
@@ -88,105 +64,77 @@ jobs:
             386) BOOTLIN_ARCH="x86-i686" ;;
             s390x) BOOTLIN_ARCH="s390x-z13" ;;
           esac
-          echo "Resolving Bootlin musl toolchain for arch=$BOOTLIN_ARCH (platform=${{ matrix.platform }})"
-          TARBALL_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains/$BOOTLIN_ARCH/tarballs/"
-          TARBALL_URL=$(curl -fsSL "$TARBALL_BASE" | grep -oE "${BOOTLIN_ARCH}--musl--stable-[^\"]+\\.tar\\.xz" | sort -r | head -n1)
-          [ -z "$TARBALL_URL" ] && { echo "Failed to locate Bootlin musl toolchain for arch=$BOOTLIN_ARCH" >&2; exit 1; }
-          echo "Downloading: $TARBALL_URL"
+
+          echo "Resolving Bootlin musl toolchain for ${BOOTLIN_ARCH}"
+          TARBALL_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains/${BOOTLIN_ARCH}/tarballs/"
+          TARBALL_NAME="$(curl -fsSL "${TARBALL_BASE}" | grep -oE "${BOOTLIN_ARCH}--musl--stable-[^\"]+\\.tar\\.xz" | sort -r | head -n1)"
+          test -n "${TARBALL_NAME}"
           cd /tmp
-          curl -fL -sS -o "$(basename "$TARBALL_URL")" "$TARBALL_BASE/$TARBALL_URL"
-          tar -xf "$(basename "$TARBALL_URL")"
-          TOOLCHAIN_DIR=$(find . -maxdepth 1 -type d -name "${BOOTLIN_ARCH}--musl--stable-*" | head -n1)
-          export PATH="$(realpath "$TOOLCHAIN_DIR")/bin:$PATH"
-          export CC=$(realpath "$(find "$TOOLCHAIN_DIR/bin" -name '*-gcc.br_real' -type f -executable | head -n1)")
-          [ -z "$CC" ] && { echo "No gcc.br_real found in $TOOLCHAIN_DIR/bin" >&2; exit 1; }
+          curl -fL -sS -o "${TARBALL_NAME}" "${TARBALL_BASE}${TARBALL_NAME}"
+          tar -xf "${TARBALL_NAME}"
+          TOOLCHAIN_DIR="$(find . -maxdepth 1 -type d -name "${BOOTLIN_ARCH}--musl--stable-*" | head -n1)"
+          export PATH="$(realpath "${TOOLCHAIN_DIR}")/bin:${PATH}"
+          export CC="$(realpath "$(find "${TOOLCHAIN_DIR}/bin" -name '*-gcc.br_real' -type f -executable | head -n1)")"
+          test -n "${CC}"
           cd -
-          go build -ldflags "-w -s -linkmode external -extldflags '-static'" -o xui-release -v main.go
-          file xui-release
-          ldd xui-release || echo "Static binary confirmed"
 
-          mkdir x-ui
-          cp xui-release x-ui/
-          cp x-ui.service.debian x-ui/
-          cp x-ui.service.arch x-ui/
-          cp x-ui.service.rhel x-ui/
-          cp x-ui.sh x-ui/
-          mv x-ui/xui-release x-ui/x-ui
-          mkdir x-ui/bin
-          cd x-ui/bin
+          go build -ldflags "-w -s -linkmode external -extldflags '-static'" -o openui-release -v main.go
+          file openui-release
+          ldd openui-release || echo "Static binary confirmed"
 
-          # Download dependencies
-          Xray_URL="https://github.com/XTLS/Xray-core/releases/download/v26.4.25/"
-          if [ "${{ matrix.platform }}" == "amd64" ]; then
-            wget -q ${Xray_URL}Xray-linux-64.zip
-            unzip Xray-linux-64.zip
-            rm -f Xray-linux-64.zip
-          elif [ "${{ matrix.platform }}" == "arm64" ]; then
-            wget -q ${Xray_URL}Xray-linux-arm64-v8a.zip
-            unzip Xray-linux-arm64-v8a.zip
-            rm -f Xray-linux-arm64-v8a.zip
-          elif [ "${{ matrix.platform }}" == "armv7" ]; then
-            wget -q ${Xray_URL}Xray-linux-arm32-v7a.zip
-            unzip Xray-linux-arm32-v7a.zip
-            rm -f Xray-linux-arm32-v7a.zip
-          elif [ "${{ matrix.platform }}" == "armv6" ]; then
-            wget -q ${Xray_URL}Xray-linux-arm32-v6.zip
-            unzip Xray-linux-arm32-v6.zip
-            rm -f Xray-linux-arm32-v6.zip
-          elif [ "${{ matrix.platform }}" == "386" ]; then
-            wget -q ${Xray_URL}Xray-linux-32.zip
-            unzip Xray-linux-32.zip
-            rm -f Xray-linux-32.zip
-          elif [ "${{ matrix.platform }}" == "armv5" ]; then
-            wget -q ${Xray_URL}Xray-linux-arm32-v5.zip
-            unzip Xray-linux-arm32-v5.zip
-            rm -f Xray-linux-arm32-v5.zip
-          elif [ "${{ matrix.platform }}" == "s390x" ]; then
-            wget -q ${Xray_URL}Xray-linux-s390x.zip
-            unzip Xray-linux-s390x.zip
-            rm -f Xray-linux-s390x.zip
-          fi
-          rm -f geoip.dat geosite.dat
+          mkdir open-ui
+          mv openui-release open-ui/open-ui
+          cp open-ui.service.debian open-ui/
+          cp open-ui.service.arch open-ui/
+          cp open-ui.service.rhel open-ui/
+          cp open-ui.rc open-ui/
+          cp install.sh open-ui/install.sh
+          cp x-ui.sh open-ui/open-ui.sh
+          mkdir open-ui/bin
+
+          cd open-ui/bin
+          XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v26.4.25/"
+          case "${{ matrix.platform }}" in
+            amd64) XRAY_ASSET="Xray-linux-64.zip" ;;
+            arm64) XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
+            armv7) XRAY_ASSET="Xray-linux-arm32-v7a.zip" ;;
+            armv6) XRAY_ASSET="Xray-linux-arm32-v6.zip" ;;
+            386) XRAY_ASSET="Xray-linux-32.zip" ;;
+            armv5) XRAY_ASSET="Xray-linux-arm32-v5.zip" ;;
+            s390x) XRAY_ASSET="Xray-linux-s390x.zip" ;;
+          esac
+          wget -q "${XRAY_URL}${XRAY_ASSET}"
+          unzip "${XRAY_ASSET}"
+          rm -f "${XRAY_ASSET}" geoip.dat geosite.dat
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
           wget -q https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
           wget -q -O geoip_IR.dat https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geoip.dat
           wget -q -O geosite_IR.dat https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat
           wget -q -O geoip_RU.dat https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat
           wget -q -O geosite_RU.dat https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat
-          mv xray xray-linux-${{ matrix.platform }}
-          cd ../..
+          mv xray "xray-linux-${{ matrix.platform }}"
 
       - name: Package
-        run: tar -zcvf x-ui-linux-${{ matrix.platform }}.tar.gz x-ui
+        run: tar -zcvf "open-ui-linux-${{ matrix.platform }}.tar.gz" open-ui
 
-      - name: Upload files to Artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: x-ui-linux-${{ matrix.platform }}
-          path: ./x-ui-linux-${{ matrix.platform }}.tar.gz
+          name: open-ui-linux-${{ matrix.platform }}
+          path: ./open-ui-linux-${{ matrix.platform }}.tar.gz
 
-      - name: Upload files to GH release
+      - name: Upload release asset
         uses: svenstaro/upload-release-action@v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref_name }}
-          file: x-ui-linux-${{ matrix.platform }}.tar.gz
-          asset_name: x-ui-linux-${{ matrix.platform }}.tar.gz
+          file: open-ui-linux-${{ matrix.platform }}.tar.gz
+          asset_name: open-ui-linux-${{ matrix.platform }}.tar.gz
           overwrite: true
-          prerelease: true
 
-  # =================================
-  #  Windows Build
-  # =================================
   build-windows:
-    name: Build for Windows
-    permissions:
-      contents: write
-    strategy:
-      matrix:
-        platform:
-          - amd64
+    name: Windows amd64
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -198,14 +146,11 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # Frontend dist must be built BEFORE go build — see comment on the
-      # Linux job above. This step is identical except npm runs on the
-      # Windows runner here.
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
-          cache: 'npm'
+          node-version: "22"
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend bundle
@@ -225,33 +170,25 @@ jobs:
             mingw-w64-x86_64-sqlite3
             mingw-w64-x86_64-pkg-config
 
-      - name: Build 3X-UI for Windows (CGO)
+      - name: Build OpenUI for Windows
         shell: msys2 {0}
         run: |
           export PATH="/c/hostedtoolcache/windows/go/$(ls /c/hostedtoolcache/windows/go | sort -V | tail -n1)/x64/bin:$PATH"
-
           export CGO_ENABLED=1
           export GOOS=windows
           export GOARCH=amd64
           export CC=x86_64-w64-mingw32-gcc
-
-          which go
-          go version
-          gcc --version
-
-          go build -ldflags "-w -s" -o xui-release.exe -v main.go
+          go build -ldflags "-w -s" -o openui-release.exe -v main.go
 
       - name: Copy and download resources
         shell: pwsh
         run: |
-          mkdir x-ui
-          Copy-Item xui-release.exe x-ui\x-ui.exe
-          mkdir x-ui\bin
-          cd x-ui\bin
-
-          # Download Xray for Windows
-          $Xray_URL = "https://github.com/XTLS/Xray-core/releases/download/v26.4.25/"
-          Invoke-WebRequest -Uri "${Xray_URL}Xray-windows-64.zip" -OutFile "Xray-windows-64.zip"
+          mkdir open-ui
+          Copy-Item openui-release.exe open-ui\open-ui.exe
+          mkdir open-ui\bin
+          cd open-ui\bin
+          $XrayUrl = "https://github.com/XTLS/Xray-core/releases/download/v26.4.25/"
+          Invoke-WebRequest -Uri "${XrayUrl}Xray-windows-64.zip" -OutFile "Xray-windows-64.zip"
           Expand-Archive -Path "Xray-windows-64.zip" -DestinationPath .
           Remove-Item "Xray-windows-64.zip"
           Remove-Item geoip.dat, geosite.dat -ErrorAction SilentlyContinue
@@ -266,24 +203,22 @@ jobs:
           Copy-Item -Path ..\windows_files\* -Destination . -Recurse
           cd ..
 
-      - name: Package to Zip
+      - name: Package
         shell: pwsh
-        run: |
-          Compress-Archive -Path .\x-ui -DestinationPath "x-ui-windows-amd64.zip"
+        run: Compress-Archive -Path .\open-ui -DestinationPath "open-ui-windows-amd64.zip"
 
-      - name: Upload files to Artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: x-ui-windows-amd64
-          path: ./x-ui-windows-amd64.zip
+          name: open-ui-windows-amd64
+          path: ./open-ui-windows-amd64.zip
 
-      - name: Upload files to GH release
+      - name: Upload release asset
         uses: svenstaro/upload-release-action@v2
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref_name }}
-          file: x-ui-windows-amd64.zip
-          asset_name: x-ui-windows-amd64.zip
+          file: open-ui-windows-amd64.zip
+          asset_name: open-ui-windows-amd64.zip
           overwrite: true
-          prerelease: true

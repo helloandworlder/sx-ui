@@ -5,7 +5,6 @@ package config
 import (
 	_ "embed"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,26 +39,33 @@ func GetName() string {
 	return strings.TrimSpace(name)
 }
 
+func getEnvWithLegacy(openUIKey, xuiKey string) string {
+	if value := os.Getenv(openUIKey); value != "" {
+		return value
+	}
+	return os.Getenv(xuiKey)
+}
+
 // GetLogLevel returns the current logging level based on environment variables or defaults to Info.
 func GetLogLevel() LogLevel {
 	if IsDebug() {
 		return Debug
 	}
-	logLevel := os.Getenv("XUI_LOG_LEVEL")
+	logLevel := getEnvWithLegacy("OPENUI_LOG_LEVEL", "XUI_LOG_LEVEL")
 	if logLevel == "" {
 		return Info
 	}
 	return LogLevel(logLevel)
 }
 
-// IsDebug returns true if debug mode is enabled via the XUI_DEBUG environment variable.
+// IsDebug returns true if debug mode is enabled via the OPENUI_DEBUG environment variable.
 func IsDebug() bool {
-	return os.Getenv("XUI_DEBUG") == "true"
+	return getEnvWithLegacy("OPENUI_DEBUG", "XUI_DEBUG") == "true"
 }
 
-// GetBinFolderPath returns the path to the binary folder, defaulting to "bin" if not set via XUI_BIN_FOLDER.
+// GetBinFolderPath returns the path to the binary folder, defaulting to "bin" if not set via OPENUI_BIN_FOLDER.
 func GetBinFolderPath() string {
-	binFolderPath := os.Getenv("XUI_BIN_FOLDER")
+	binFolderPath := getEnvWithLegacy("OPENUI_BIN_FOLDER", "XUI_BIN_FOLDER")
 	if binFolderPath == "" {
 		binFolderPath = "bin"
 	}
@@ -85,14 +91,14 @@ func getBaseDir() string {
 
 // GetDBFolderPath returns the path to the database folder based on environment variables or platform defaults.
 func GetDBFolderPath() string {
-	dbFolderPath := os.Getenv("XUI_DB_FOLDER")
+	dbFolderPath := getEnvWithLegacy("OPENUI_DB_FOLDER", "XUI_DB_FOLDER")
 	if dbFolderPath != "" {
 		return dbFolderPath
 	}
 	if runtime.GOOS == "windows" {
 		return getBaseDir()
 	}
-	return "/etc/x-ui"
+	return "/etc/open-ui"
 }
 
 // GetDBPath returns the full path to the database file.
@@ -102,55 +108,12 @@ func GetDBPath() string {
 
 // GetLogFolder returns the path to the log folder based on environment variables or platform defaults.
 func GetLogFolder() string {
-	logFolderPath := os.Getenv("XUI_LOG_FOLDER")
+	logFolderPath := getEnvWithLegacy("OPENUI_LOG_FOLDER", "XUI_LOG_FOLDER")
 	if logFolderPath != "" {
 		return logFolderPath
 	}
 	if runtime.GOOS == "windows" {
 		return filepath.Join(".", "log")
 	}
-	return "/var/log/x-ui"
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	if err != nil {
-		return err
-	}
-
-	return out.Sync()
-}
-
-func init() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	if os.Getenv("XUI_DB_FOLDER") != "" {
-		return
-	}
-	oldDBFolder := "/etc/x-ui"
-	oldDBPath := fmt.Sprintf("%s/%s.db", oldDBFolder, GetName())
-	newDBFolder := GetDBFolderPath()
-	newDBPath := fmt.Sprintf("%s/%s.db", newDBFolder, GetName())
-	_, err := os.Stat(newDBPath)
-	if err == nil {
-		return // new exists
-	}
-	_, err = os.Stat(oldDBPath)
-	if os.IsNotExist(err) {
-		return // old does not exist
-	}
-	_ = copyFile(oldDBPath, newDBPath) // ignore error
+	return "/var/log/open-ui"
 }
